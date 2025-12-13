@@ -22,6 +22,20 @@ const products = [
     price: 278.00,
     retailer: "Walmart",
     link: "https://www.walmart.ca"
+  },
+  {
+    id: "mock_3",
+    title: "Nintendo Switch OLED",
+    price: 399.99,
+    retailer: "Amazon",
+    link: "https://www.amazon.ca"
+  },
+  {
+    id: "mock_4",
+    title: "PlayStation 5",
+    price: 649.99,
+    retailer: "Walmart",
+    link: "https://www.walmart.ca"
   }
 ];
 
@@ -45,22 +59,49 @@ app.get("/", (req, res) => {
   res.json({ message: "Deal AI Backend is running!" });
 });
 
-// Featured deals (for 2x2 grid)
+// Featured deals (2x2 grid)
 app.get("/featured", (req, res) => {
-  res.json(products);
+  res.json(products.slice(0, 4));
 });
 
-// Search route (mock logic)
+// 🔥 Search + pagination + sorting
 app.get("/search", (req, res) => {
   const query = (req.query.query || "").toLowerCase();
 
-  const results = products.filter(p =>
+  // pagination
+  const page = parseInt(req.query.page || "1");
+  const limit = parseInt(req.query.limit || "4");
+  const start = (page - 1) * limit;
+  const end = start + limit;
+
+  // sorting
+  const sort = req.query.sort || "price_asc";
+
+  let results = products.filter(p =>
     p.title.toLowerCase().includes(query)
   );
 
+  if (sort === "price_asc") {
+    results.sort((a, b) => a.price - b.price);
+  }
+
+  if (sort === "price_desc") {
+    results.sort((a, b) => b.price - a.price);
+  }
+
+  if (sort === "name") {
+    results.sort((a, b) => a.title.localeCompare(b.title));
+  }
+
+  const paginatedResults = results.slice(start, end);
+
   res.json({
     query,
-    results
+    page,
+    limit,
+    totalResults: results.length,
+    totalPages: Math.ceil(results.length / limit),
+    results: paginatedResults
   });
 });
 
@@ -73,13 +114,11 @@ app.get("/redirect", (req, res) => {
     return res.status(404).json({ error: "Product not found" });
   }
 
-  // Track click before redirect
   trackClick({
     productId: product.id,
     retailer: product.retailer
   });
 
-  // Redirect user
   res.redirect(product.link);
 });
 
