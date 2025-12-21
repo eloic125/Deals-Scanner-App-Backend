@@ -1,20 +1,35 @@
 import express from "express";
 import crypto from "node:crypto";
+import fs from "fs";
 import { featuredProducts } from "../data/featuredProducts.js";
 import { readDeals, writeDeals } from "../services/dealStore.js";
 import { validateDealLink } from "../services/urlPolicy.js";
 
 const router = express.Router();
 
+function readSecretFile(filename) {
+  try {
+    const p = `/etc/secrets/${filename}`;
+    if (!fs.existsSync(p)) return "";
+    return String(fs.readFileSync(p, "utf8") || "").trim();
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Admin key
  * - Prefer env var ADMIN_KEY (recommended)
- * - Fallback to your dev key so nothing breaks locally
+ * - Otherwise read Render Secret File /etc/secrets/ADMIN_KEY
+ * - Otherwise fallback (local only)
  */
-const ADMIN_KEY = process.env.ADMIN_KEY || "dev-admin-key";
+const ADMIN_KEY =
+  (process.env.ADMIN_KEY && process.env.ADMIN_KEY.trim()) ||
+  readSecretFile("ADMIN_KEY") ||
+  "dev-admin-key";
 
 function requireAdmin(req, res) {
-  const adminKey = req.headers["x-admin-key"];
+  const adminKey = String(req.headers["x-admin-key"] || "").trim();
   if (!adminKey || adminKey !== ADMIN_KEY) {
     res.status(403).json({ error: "Unauthorized" });
     return false;
@@ -181,7 +196,10 @@ router.post("/admin/deals/bulk", (req, res) => {
         // UPSERT: update allowed fields, preserve id + moderation status by default
         const existing = deals[existingIdx];
         if (!existing || typeof existing !== "object") {
-          skipped.push({ index: i, reason: "Duplicate found but existing record invalid" });
+          skipped.push({
+            index: i,
+            reason: "Duplicate found but existing record invalid",
+          });
           continue;
         }
 
@@ -198,7 +216,7 @@ router.post("/admin/deals/bulk", (req, res) => {
           source:
             typeof input.source === "string" && input.source.trim()
               ? input.source.trim()
-              : (existing.source || "curated"),
+              : existing.source || "curated",
 
           image:
             typeof input.image === "string" && input.image.trim()
@@ -215,7 +233,10 @@ router.post("/admin/deals/bulk", (req, res) => {
               ? input.notes.trim()
               : existing.notes,
 
-          inStock: typeof input.inStock === "boolean" ? input.inStock : (existing.inStock ?? true),
+          inStock:
+            typeof input.inStock === "boolean"
+              ? input.inStock
+              : existing.inStock ?? true,
 
           // Do NOT auto-change status/review fields for existing items
           updatedAt: now,
@@ -286,7 +307,6 @@ router.post("/admin/deals/bulk", (req, res) => {
       skippedCount: skipped.length,
       skipped,
       updated,
-      // keep response useful; you can remove added array later if you want smaller payloads
       added,
     });
   } catch (err) {
@@ -415,4 +435,3 @@ router.post("/admin/featured", (req, res) => {
 });
 
 export default router;
-
