@@ -25,8 +25,13 @@ function readSecretFile(filename) {
  */
 const ADMIN_KEY =
   (process.env.ADMIN_KEY && process.env.ADMIN_KEY.trim()) ||
-  readSecretFile("ADMIN_KEY") ||
-  "dev-admin-key";
+  readSecretFile("ADMIN_KEY");
+
+if (!ADMIN_KEY) {
+  throw new Error(
+    "ADMIN_KEY is missing. Set env var ADMIN_KEY or Render Secret File /etc/secrets/ADMIN_KEY"
+  );
+}
 
 function requireAdmin(req, res) {
   const adminKey = String(req.headers["x-admin-key"] || "").trim();
