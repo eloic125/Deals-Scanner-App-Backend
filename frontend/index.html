@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>DealSignal – Deals Test</title>
+</head>
+<body>
+  <h1>Deals</h1>
+  <pre id="output">Loading…</pre>
+
+  <script type="module">
+    import { fetchDeals } from "./src/api/deals.js";
+
+    async function run() {
+      try {
+        const data = await fetchDeals();
+        document.getElementById("output").textContent =
+          JSON.stringify(data, null, 2);
+      } catch (err) {
+        document.getElementById("output").textContent =
+          "Error: " + err.message;
+      }
+    }
+
+    run();
+  </script>
+</body>
+</html>
