@@ -119,13 +119,12 @@ export function validateDealLink({ url, retailer }) {
     return { ok: false, reason: `Links ending with ${ext} are not allowed.` };
   }
 
-  const r = (retailer || "").trim();
+  const r = String(retailer || "").trim().toLowerCase();
 
   /* =========================
      AMAZON — HARD BYPASS
-     (NO ALLOWLIST, NO FALLBACK)
-  ========================= */
-  if (r === "Amazon") {
+========================= */
+  if (r === "amazon") {
     if (!isAmazonHost(host)) {
       return { ok: false, reason: "Invalid Amazon domain." };
     }
@@ -134,14 +133,14 @@ export function validateDealLink({ url, retailer }) {
 
   /* =========================
      OTHER RETAILERS — STRICT
-  ========================= */
-  const allowlist = RETAILER_ALLOWLIST[r];
+========================= */
+  const allowlist = RETAILER_ALLOWLIST[retailer];
   if (Array.isArray(allowlist) && allowlist.length > 0) {
     const ok = allowlist.some((d) => hostMatchesAllowed(host, d));
     if (!ok) {
       return {
         ok: false,
-        reason: `Link domain does not match allowed domains for retailer '${r}'.`,
+        reason: `Link domain does not match allowed domains for retailer '${retailer}'.`,
       };
     }
     return { ok: true, normalizedUrl: u.toString(), host };
@@ -149,7 +148,7 @@ export function validateDealLink({ url, retailer }) {
 
   /* =========================
      FALLBACK ("Other")
-  ========================= */
+========================= */
   if (GLOBAL_SHORTENER_HOSTS.has(host)) {
     return { ok: false, reason: "Shortened links are not allowed for 'Other'." };
   }
