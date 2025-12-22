@@ -60,11 +60,22 @@ app.use(
 // Body size limit (abuse hardening)
 app.use(express.json({ limit: "100kb" }));
 
-// Routes
+// Routes (root)
 app.use("/", healthRoutes);
 app.use("/", dealsRoutes);
 app.use("/", redirectRoutes);
 app.use("/", adminRoutes);
+
+// API aliases (so /api/* and /api/v1/* work too)
+app.use("/api", healthRoutes);
+app.use("/api", dealsRoutes);
+app.use("/api", redirectRoutes);
+app.use("/api", adminRoutes);
+
+app.use("/api/v1", healthRoutes);
+app.use("/api/v1", dealsRoutes);
+app.use("/api/v1", redirectRoutes);
+app.use("/api/v1", adminRoutes);
 
 // Clean CORS errors (avoid leaking stack traces)
 app.use((err, req, res, next) => {
