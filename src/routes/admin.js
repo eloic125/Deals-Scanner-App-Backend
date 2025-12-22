@@ -39,7 +39,7 @@ router.post("/admin/deals/bulk", (req, res) => {
     : [];
 
   const store = readDeals();
-  const deals = Array.isArray(store.deals) ? store.deals : [];
+  const existingDeals = Array.isArray(store.deals) ? store.deals : [];
   const now = new Date().toISOString();
 
   const added = [];
@@ -61,23 +61,53 @@ router.post("/admin/deals/bulk", (req, res) => {
 
     if (!check.ok) continue;
 
+    const price = Number(input.price);
+    if (!Number.isFinite(price)) continue;
+
+    const originalPrice =
+      input.originalPrice !== undefined &&
+      input.originalPrice !== null &&
+      Number(input.originalPrice) > price
+        ? Number(input.originalPrice)
+        : null;
+
+    const discountPercent =
+      originalPrice
+        ? Math.round(((originalPrice - price) / originalPrice) * 100)
+        : null;
+
     added.push({
       id: crypto.randomUUID(),
+
+      // CORE
       title: input.title.trim(),
-      price: Number(input.price),
+      price,
+      originalPrice,
+      discountPercent,
+
+      // LINK
       url: check.normalizedUrl,
       urlHost: check.host,
+
+      // META
       retailer: input.retailer ?? "Other",
-      source: "curated",
-      status: "approved",
+      source: input.source ?? "curated",
+      status: input.status ?? "approved",
+      category: input.category ?? "Other",
+
+      // IMAGE (NEW)
+      imageUrl: input.imageUrl ?? null,
+      imageType: input.imageType ?? null,
+      imageDisclaimer: input.imageDisclaimer ?? null,
+
+      // TIMESTAMPS
       createdAt: now,
       updatedAt: now,
-      category: "Other",
     });
   }
 
   if (added.length) {
-    writeDeals([...deals, ...added]);
+    writeDeals([...existingDeals, ...added]);
   }
 
   res.json({ ok: true, addedCount: added.length });
