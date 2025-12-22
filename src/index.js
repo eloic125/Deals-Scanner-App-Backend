@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
 
 import healthRoutes from "./routes/health.js";
 import dealsRoutes from "./routes/deals.js";
@@ -8,6 +9,8 @@ import redirectRoutes from "./routes/redirect.js";
 import adminRoutes from "./routes/admin.js";
 
 const app = express();
+
+app.use(helmet());
 
 /**
  * CORS allowlist
