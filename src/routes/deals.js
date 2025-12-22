@@ -70,11 +70,26 @@ function inferCategoryFromTitle(title) {
   const t = (title || "").toLowerCase();
 
   const rules = [
-    { category: "Audio & Headphones", keywords: ["airpods", "earbud", "earbuds", "headphone", "headphones", "sony wh", "speaker", "beats"] },
-    { category: "Gaming", keywords: ["ps5", "playstation", "xbox", "nintendo", "switch", "controller", "gaming", "gpu", "console"] },
-    { category: "Computers & Tech", keywords: ["ssd", "laptop", "pc", "keyboard", "mouse", "monitor", "ram", "router", "nvme", "motherboard"] },
-    { category: "Phones & Accessories", keywords: ["iphone", "samsung", "pixel", "case", "charger", "usb-c", "magsafe", "power bank"] },
-    { category: "Home & Living", keywords: ["vacuum", "kitchen", "blender", "air fryer", "lamp", "chair", "sofa", "table"] },
+    {
+      category: "Audio & Headphones",
+      keywords: ["airpods", "earbud", "earbuds", "headphone", "headphones", "sony wh", "speaker", "beats"],
+    },
+    {
+      category: "Gaming",
+      keywords: ["ps5", "playstation", "xbox", "nintendo", "switch", "controller", "gaming", "gpu", "console"],
+    },
+    {
+      category: "Computers & Tech",
+      keywords: ["ssd", "laptop", "pc", "keyboard", "mouse", "monitor", "ram", "router", "nvme", "motherboard"],
+    },
+    {
+      category: "Phones & Accessories",
+      keywords: ["iphone", "samsung", "pixel", "case", "charger", "usb-c", "magsafe", "power bank"],
+    },
+    {
+      category: "Home & Living",
+      keywords: ["vacuum", "kitchen", "blender", "air fryer", "lamp", "chair", "sofa", "table"],
+    },
     { category: "Fashion", keywords: ["shoe", "shoes", "sneaker", "jacket", "hoodie", "jeans", "shirt", "dress"] },
   ];
 
@@ -105,14 +120,7 @@ router.get("/deals", (req, res) => {
       .filter((d) => d && typeof d === "object")
       .filter((d) => !d.status || d.status === "approved");
 
-    const {
-      limit = "50",
-      offset = "0",
-      sort = "newest",
-      source,
-      q,
-      category
-    } = req.query;
+    const { limit = "50", offset = "0", sort = "newest", source, q, category } = req.query;
 
     const parsedLimit = Math.min(parseInt(limit, 10) || 50, 200);
     const parsedOffset = Math.max(parseInt(offset, 10) || 0, 0);
@@ -135,11 +143,7 @@ router.get("/deals", (req, res) => {
 
     if (q) {
       const query = String(q).toLowerCase();
-      deals = deals.filter(
-        (d) =>
-          typeof d.title === "string" &&
-          d.title.toLowerCase().includes(query)
-      );
+      deals = deals.filter((d) => typeof d.title === "string" && d.title.toLowerCase().includes(query));
     }
 
     const totalCount = deals.length;
@@ -172,6 +176,34 @@ router.get("/deals", (req, res) => {
 });
 
 /**
+ * GET /deals/:id
+ * Public deal details (APPROVED ONLY)
+ */
+router.get("/deals/:id", (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const store = readDeals();
+    const deals = Array.isArray(store.deals) ? store.deals : [];
+
+    const deal = deals.find((d) => d && typeof d === "object" && d.id === id);
+
+    // Not found OR not approved (pending/rejected) => 404
+    if (!deal || (deal.status && deal.status !== "approved")) {
+      return res.status(404).json({ error: "Deal not found" });
+    }
+
+    return res.json({
+      ...deal,
+      category: normalizeCategory(deal.category, deal.title),
+    });
+  } catch (err) {
+    console.error("[GET /deals/:id] Failed:", err.message);
+    return res.status(500).json({ error: "Failed to load deal" });
+  }
+});
+
+/**
  * POST /deals
  * Community submission: ALWAYS PENDING (requires admin approval)
  * Accepts optional category; if missing, we infer from title (keyword rules).
@@ -187,17 +219,14 @@ router.get("/deals", (req, res) => {
  */
 router.post("/deals", (req, res) => {
   try {
-    const { title, price, url, retailer, source, image, category, notes, website } =
-      req.body || {};
+    const { title, price, url, retailer, source, image, category, notes, website } = req.body || {};
 
     const cleanTitle = typeof title === "string" ? title.trim() : "";
     const cleanUrl = typeof url === "string" ? url.trim() : "";
 
     // Retailer label for display (what we store)
     const cleanRetailer =
-      typeof retailer === "string" && retailer.trim().length > 0
-        ? retailer.trim()
-        : "Other";
+      typeof retailer === "string" && retailer.trim().length > 0 ? retailer.trim() : "Other";
 
     // Retailer key for allowlist matching (so "Best Buy" => "BestBuy")
     const retailerKey = cleanRetailer.replace(/\s+/g, "");
@@ -289,8 +318,7 @@ router.post("/deals", (req, res) => {
       retailer: cleanRetailer,
 
       // Keep source controlled; default to community
-      source:
-        typeof source === "string" && source.trim() ? source.trim() : "community",
+      source: typeof source === "string" && source.trim() ? source.trim() : "community",
 
       // Optional fields (safe)
       image: typeof image === "string" && image.trim() ? image.trim() : undefined,
