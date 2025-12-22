@@ -26,13 +26,9 @@ function requireAdmin(req, res) {
 }
 
 /* =========================
-   ADMIN ROUTES
+   CREATE (BULK)
 ========================= */
 
-/**
- * POST /admin/deals/bulk
- * FORCE-CREATE DEALS (NO SILENT SKIP)
- */
 router.post("/admin/deals/bulk", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
@@ -49,8 +45,12 @@ router.post("/admin/deals/bulk", (req, res) => {
   const added = [];
 
   for (const input of inputs) {
-    // ONLY HARD REQUIREMENTS
-    if (typeof input?.title !== "string" || typeof input?.url !== "string") {
+    if (
+      typeof input?.title !== "string" ||
+      typeof input?.url !== "string" ||
+      input.price === undefined ||
+      input.price === null
+    ) {
       continue;
     }
 
@@ -61,15 +61,10 @@ router.post("/admin/deals/bulk", (req, res) => {
 
     if (!check.ok) continue;
 
-    const price =
-      input.price === undefined || input.price === null
-        ? 0
-        : Number(input.price);
-
     added.push({
       id: crypto.randomUUID(),
       title: input.title.trim(),
-      price,
+      price: Number(input.price),
       url: check.normalizedUrl,
       urlHost: check.host,
       retailer: input.retailer ?? "Other",
@@ -77,16 +72,61 @@ router.post("/admin/deals/bulk", (req, res) => {
       status: "approved",
       createdAt: now,
       updatedAt: now,
+      category: "Other",
     });
   }
 
-  // WRITE EVEN IF EMPTY (NO HIDDEN LOGIC)
-  writeDeals([...deals, ...added]);
+  if (added.length) {
+    writeDeals([...deals, ...added]);
+  }
 
-  res.json({
-    ok: true,
-    addedCount: added.length,
-  });
+  res.json({ ok: true, addedCount: added.length });
+});
+
+/* =========================
+   DELETE (REST)
+========================= */
+
+router.delete("/admin/deals/:id", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const { id } = req.params;
+
+  const store = readDeals();
+  const deals = Array.isArray(store.deals) ? store.deals : [];
+
+  const idx = deals.findIndex(d => d.id === id);
+  if (idx === -1) {
+    return res.status(404).json({ error: "Deal not found" });
+  }
+
+  const removed = deals.splice(idx, 1)[0];
+  writeDeals(deals);
+
+  res.json({ ok: true, deletedId: removed.id });
+});
+
+/* =========================
+   DELETE (Base44 COMPAT)
+========================= */
+
+router.post("/admin/deals/:id/delete", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const { id } = req.params;
+
+  const store = readDeals();
+  const deals = Array.isArray(store.deals) ? store.deals : [];
+
+  const idx = deals.findIndex(d => d.id === id);
+  if (idx === -1) {
+    return res.status(404).json({ error: "Deal not found" });
+  }
+
+  const removed = deals.splice(idx, 1)[0];
+  writeDeals(deals);
+
+  res.json({ ok: true, deletedId: removed.id });
 });
 
 export default router;
