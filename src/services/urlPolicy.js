@@ -5,6 +5,10 @@ import {
   BLOCKED_EXTENSIONS,
 } from "../config/retailerAllowlist.js";
 
+/* =========================
+   HELPERS
+========================= */
+
 function isAscii(str) {
   for (let i = 0; i < str.length; i++) {
     if (str.charCodeAt(i) > 127) return false;
@@ -34,8 +38,7 @@ function isPrivateIpv4(hostname) {
 }
 
 function isIpLike(hostname) {
-  if (hostname.includes(":")) return true;
-  return isIpv4Literal(hostname);
+  return hostname.includes(":") || isIpv4Literal(hostname);
 }
 
 function hostMatchesAllowed(host, allowedDomain) {
@@ -61,6 +64,10 @@ function isAmazonHost(host) {
   );
 }
 
+/* =========================
+   MAIN VALIDATOR
+========================= */
+
 export function validateDealLink({ url, retailer }) {
   if (typeof url !== "string" || !url.trim()) {
     return { ok: false, reason: "URL is required." };
@@ -78,29 +85,24 @@ export function validateDealLink({ url, retailer }) {
     return { ok: false, reason: "Invalid URL format." };
   }
 
-  // HTTPS only
   if (u.protocol !== "https:") {
     return { ok: false, reason: "Only HTTPS links are allowed." };
   }
 
-  // Block credentials
   if (u.username || u.password) {
     return { ok: false, reason: "URL cannot contain credentials." };
   }
 
   const host = (u.hostname || "").toLowerCase();
 
-  // Anti-homograph
   if (!isAscii(host)) {
     return { ok: false, reason: "Non-ASCII domains are not allowed." };
   }
 
-  // Block localhost
   if (host === "localhost" || host.endsWith(".local")) {
     return { ok: false, reason: "Localhost/internal links are not allowed." };
   }
 
-  // Block IP literals
   if (isIpLike(host)) {
     if (isPrivateIpv4(host) || host === "::1") {
       return { ok: false, reason: "Private-network IP links are not allowed." };
@@ -108,12 +110,10 @@ export function validateDealLink({ url, retailer }) {
     return { ok: false, reason: "IP address links are not allowed." };
   }
 
-  // No custom ports
   if (u.port) {
     return { ok: false, reason: "Links with custom ports are not allowed." };
   }
 
-  // Block executables
   const ext = blockedExtension(u);
   if (ext) {
     return { ok: false, reason: `Links ending with ${ext} are not allowed.` };
@@ -122,18 +122,20 @@ export function validateDealLink({ url, retailer }) {
   const r = (retailer || "").trim();
 
   /* =========================
-     AMAZON EXPLICIT ALLOW
+     AMAZON — HARD BYPASS
+     (NO ALLOWLIST, NO FALLBACK)
   ========================= */
-  if (r === "Amazon" && isAmazonHost(host)) {
-    // Affiliate tags are allowed and preserved
+  if (r === "Amazon") {
+    if (!isAmazonHost(host)) {
+      return { ok: false, reason: "Invalid Amazon domain." };
+    }
     return { ok: true, normalizedUrl: u.toString(), host };
   }
 
   /* =========================
-     OTHER RETAILERS
+     OTHER RETAILERS — STRICT
   ========================= */
   const allowlist = RETAILER_ALLOWLIST[r];
-
   if (Array.isArray(allowlist) && allowlist.length > 0) {
     const ok = allowlist.some((d) => hostMatchesAllowed(host, d));
     if (!ok) {
@@ -145,7 +147,9 @@ export function validateDealLink({ url, retailer }) {
     return { ok: true, normalizedUrl: u.toString(), host };
   }
 
-  // "Other" strict mode
+  /* =========================
+     FALLBACK ("Other")
+  ========================= */
   if (GLOBAL_SHORTENER_HOSTS.has(host)) {
     return { ok: false, reason: "Shortened links are not allowed for 'Other'." };
   }
