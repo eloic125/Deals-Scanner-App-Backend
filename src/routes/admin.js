@@ -61,7 +61,22 @@ router.post("/admin/deals/bulk", (req, res) => {
 
     if (!check.ok) continue;
 
-    const price = Number(input.price);
+    /* =========================
+       PRICE NORMALIZATION (FIX)
+    ========================= */
+
+    let price = null;
+
+    if (typeof input.price === "number") {
+      price = input.price;
+    } else if (typeof input.price === "string") {
+      const cleaned = input.price
+        .replace(/[^0-9.,]/g, "")
+        .replace(",", ".");
+      const parsed = Number(cleaned);
+      if (Number.isFinite(parsed)) price = parsed;
+    }
+
     if (!Number.isFinite(price)) continue;
 
     const originalPrice =
@@ -95,7 +110,7 @@ router.post("/admin/deals/bulk", (req, res) => {
       status: input.status ?? "approved",
       category: input.category ?? "Other",
 
-      // IMAGE (NEW)
+      // IMAGE
       imageUrl: input.imageUrl ?? null,
       imageType: input.imageType ?? null,
       imageDisclaimer: input.imageDisclaimer ?? null,
