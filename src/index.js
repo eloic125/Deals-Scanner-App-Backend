@@ -32,25 +32,30 @@ const isProd = process.env.NODE_ENV === "production";
 app.use(
   cors({
     origin: (origin, cb) => {
-      // If no Origin header, do NOT set CORS headers (server-to-server / PowerShell / curl without Origin)
-      if (!origin) return cb(null, false);
+      // allow curl / server-to-server
+      if (!origin) return cb(null, true);
 
-      // Dev: allow localhost
-      if (!isProd) {
-        if (
-          origin.startsWith("http://localhost:") ||
-          origin.startsWith("http://127.0.0.1:")
-        ) {
-          return cb(null, origin); // echo origin
-        }
+      // Always allow production site
+      if (origin === "https://dealsscanner.ca") return cb(null, origin);
+      if (origin === "https://www.dealsscanner.ca") return cb(null, origin);
+
+      // Allow Base44 editor + previews
+      if (origin === "https://app.base44.com") return cb(null, origin);
+      try {
+        const u = new URL(origin);
+        if (u.hostname.endsWith(".base44.app")) return cb(null, origin);
+      } catch {}
+
+      // Allow local dev
+      if (
+        origin.startsWith("http://localhost:") ||
+        origin.startsWith("http://127.0.0.1:")
+      ) {
+        return cb(null, origin);
       }
-
-      // Prod (and also works in dev): strict allowlist
-      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, origin); // echo origin
 
       return cb(new Error("CORS blocked: origin not allowed"));
     },
-    credentials: false,
     methods: ["GET", "POST", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "x-admin-key"],
     optionsSuccessStatus: 204,
