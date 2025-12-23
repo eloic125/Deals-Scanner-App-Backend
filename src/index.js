@@ -11,6 +11,11 @@ import adminRoutes from "./routes/admin.js";
 const app = express();
 
 /* =========================
+   BOOT MARKER (DO NOT REMOVE)
+========================= */
+console.log("BOOT VERSION 2025-01-BASE44-CORS-FIX");
+
+/* =========================
    SECURITY
 ========================= */
 app.use(helmet());
