@@ -61,10 +61,6 @@ router.post("/admin/deals/bulk", (req, res) => {
 
     if (!check.ok) continue;
 
-    /* =========================
-       PRICE NORMALIZATION (FIX)
-    ========================= */
-
     let price = null;
 
     if (typeof input.price === "number") {
@@ -94,28 +90,24 @@ router.post("/admin/deals/bulk", (req, res) => {
     added.push({
       id: crypto.randomUUID(),
 
-      // CORE
       title: input.title.trim(),
       price,
       originalPrice,
       discountPercent,
 
-      // LINK
       url: check.normalizedUrl,
       urlHost: check.host,
 
-      // META
       retailer: input.retailer ?? "Other",
       source: input.source ?? "curated",
       status: input.status ?? "approved",
       category: input.category ?? "Other",
 
-      // IMAGE
       imageUrl: input.imageUrl ?? null,
       imageType: input.imageType ?? null,
       imageDisclaimer: input.imageDisclaimer ?? null,
+      notes: input.notes ?? null,
 
-      // TIMESTAMPS
       createdAt: now,
       updatedAt: now,
     });
@@ -126,6 +118,79 @@ router.post("/admin/deals/bulk", (req, res) => {
   }
 
   res.json({ ok: true, addedCount: added.length });
+});
+
+/* =========================
+   UPDATE (PUT)  ✅ BASE44 SAVE
+========================= */
+
+router.put("/admin/deals/:id", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const { id } = req.params;
+  const updates = req.body || {};
+
+  const store = readDeals();
+  const deals = Array.isArray(store.deals) ? store.deals : [];
+
+  const idx = deals.findIndex(d => d.id === id);
+  if (idx === -1) {
+    return res.status(404).json({ error: "Deal not found" });
+  }
+
+  const existing = deals[idx];
+  const now = new Date().toISOString();
+
+  const updated = {
+    ...existing,
+
+    title:
+      typeof updates.title === "string"
+        ? updates.title.trim()
+        : existing.title,
+
+    price:
+      typeof updates.price === "number"
+        ? updates.price
+        : existing.price,
+
+    originalPrice:
+      typeof updates.originalPrice === "number"
+        ? updates.originalPrice
+        : existing.originalPrice,
+
+    retailer:
+      typeof updates.retailer === "string"
+        ? updates.retailer
+        : existing.retailer,
+
+    category:
+      typeof updates.category === "string"
+        ? updates.category
+        : existing.category,
+
+    status:
+      typeof updates.status === "string"
+        ? updates.status
+        : existing.status,
+
+    imageUrl:
+      typeof updates.imageUrl === "string"
+        ? updates.imageUrl
+        : existing.imageUrl,
+
+    notes:
+      typeof updates.notes === "string"
+        ? updates.notes
+        : existing.notes,
+
+    updatedAt: now,
+  };
+
+  deals[idx] = updated;
+  writeDeals(deals);
+
+  res.json({ ok: true, deal: updated });
 });
 
 /* =========================
