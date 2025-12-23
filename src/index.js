@@ -16,23 +16,27 @@ const app = express();
 app.use(helmet());
 
 /* =========================
-   CORS (SINGLE SOURCE OF TRUTH)
+   CORS (BASE44 + PROD + DEV)
 ========================= */
 app.use(
   cors({
     origin: (origin, cb) => {
-      // allow server-to-server / curl
+      // allow server-to-server (curl, render internal)
       if (!origin) return cb(null, true);
 
-      // production domains
+      // production
       if (origin === "https://dealsscanner.ca") return cb(null, origin);
       if (origin === "https://www.dealsscanner.ca") return cb(null, origin);
 
-      // Base44 editor + previews
+      // Base44 editor
       if (origin === "https://app.base44.com") return cb(null, origin);
+
+      // Base44 preview sandboxes
       try {
         const u = new URL(origin);
-        if (u.hostname.endsWith(".base44.app")) return cb(null, origin);
+        if (u.hostname.endsWith(".base44.app")) {
+          return cb(null, origin);
+        }
       } catch {}
 
       // local dev
@@ -45,7 +49,7 @@ app.use(
 
       return cb(new Error("CORS blocked: origin not allowed"));
     },
-    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: [
       "Content-Type",
       "x-admin-key",
@@ -56,6 +60,9 @@ app.use(
     optionsSuccessStatus: 204,
   })
 );
+
+// explicit preflight handling
+app.options("*", cors());
 
 /* =========================
    BODY PARSER
