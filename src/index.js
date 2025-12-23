@@ -61,8 +61,11 @@ app.use(
   })
 );
 
-// explicit preflight handling
-app.options("*", cors());
+/* =========================
+   PREFLIGHT (Node 22 FIX)
+========================= */
+// IMPORTANT: "*" crashes Express on Node 22
+app.options(/.*/, cors());
 
 /* =========================
    BODY PARSER
