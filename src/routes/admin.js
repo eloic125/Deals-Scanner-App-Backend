@@ -1,7 +1,15 @@
 import express from "express";
-import crypto from "node:crypto";
-import { readDeals, writeDeals } from "../services/dealStore.js";
+import fs from "fs";
+import {
+  readDeals,
+  upsertDeals,
+} from "../services/dealStore.js";
 import { validateDealLink } from "../services/urlPolicy.js";
+import {
+  getCachedImage,
+  saveCachedImage,
+  productKeyFromUrl,
+} from "../services/productImageStore.js";
 
 const router = express.Router();
 
@@ -9,234 +17,130 @@ const router = express.Router();
    ADMIN AUTH
 ========================= */
 
-const ADMIN_KEY = process.env.ADMIN_KEY?.trim();
+function readSecretFile(filename) {
+  try {
+    const p = `/etc/secrets/${filename}`;
+    if (!fs.existsSync(p)) return "";
+    return String(fs.readFileSync(p, "utf8") || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+const ADMIN_KEY =
+  process.env.ADMIN_KEY?.trim() ||
+  readSecretFile("ADMIN_KEY");
 
 if (!ADMIN_KEY) {
-  console.error("ADMIN_KEY is missing");
-  process.exit(1);
+  throw new Error("ADMIN_KEY is missing");
 }
 
 function requireAdmin(req, res) {
   const key = String(req.headers["x-admin-key"] || "").trim();
   if (!key || key !== ADMIN_KEY) {
-    res.status(403).json({ error: "Unauthorized" });
+    res.status(403).json({ error: "Forbidden" });
     return false;
   }
   return true;
 }
 
 /* =========================
-   CREATE (BULK)
+   ADMIN BULK INGEST (SINGLE SOURCE OF TRUTH)
 ========================= */
 
 router.post("/admin/deals/bulk", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const inputs = Array.isArray(req.body?.deals)
-    ? req.body.deals
-    : Array.isArray(req.body)
-    ? req.body
-    : [];
+  try {
+    const inputs = Array.isArray(req.body?.deals)
+      ? req.body.deals
+      : [];
 
-  const store = readDeals();
-  const existingDeals = Array.isArray(store.deals) ? store.deals : [];
-  const now = new Date().toISOString();
-
-  const added = [];
-
-  for (const input of inputs) {
-    if (
-      typeof input?.title !== "string" ||
-      typeof input?.url !== "string" ||
-      input.price === undefined ||
-      input.price === null
-    ) {
-      continue;
+    if (!inputs.length) {
+      return res.status(400).json({
+        ok: false,
+        error: "No deals provided",
+      });
     }
 
-    const check = validateDealLink({
-      url: input.url,
-      retailer: input.retailer,
-    });
+    const now = new Date().toISOString();
+    const prepared = [];
 
-    if (!check.ok) continue;
+    for (const input of inputs) {
+      // 🔑 SCREENSHOT / AI DEALS (NO URL REQUIRED)
+      if (input.sourceKey && input.title && input.price != null) {
+        prepared.push({
+          ...input,
+          createdAt: now,
+          updatedAt: now,
+        });
+        continue;
+      }
 
-    let price = null;
+      // 🌐 URL DEALS (EXISTING LOGIC)
+      if (typeof input?.url !== "string") continue;
 
-    if (typeof input.price === "number") {
-      price = input.price;
-    } else if (typeof input.price === "string") {
-      const cleaned = input.price
-        .replace(/[^0-9.,]/g, "")
-        .replace(",", ".");
-      const parsed = Number(cleaned);
-      if (Number.isFinite(parsed)) price = parsed;
+      const check = validateDealLink({
+        url: input.url,
+        retailer: input.retailer,
+      });
+
+      if (!check.ok) continue;
+
+      const normalizedUrl = check.normalizedUrl;
+      const productKey = productKeyFromUrl(normalizedUrl);
+
+      let imageUrl = null;
+      let imageType = null;
+      let imageDisclaimer = null;
+
+      if (typeof input.imageUrl === "string" && input.imageUrl.trim()) {
+        imageUrl = input.imageUrl.trim();
+        imageType = input.imageType ?? "remote";
+        imageDisclaimer = input.imageDisclaimer ?? null;
+
+        saveCachedImage({
+          url: normalizedUrl,
+          imageUrl,
+          imageType,
+        });
+      } else {
+        const cached = getCachedImage(normalizedUrl);
+        if (cached) {
+          imageUrl = cached.imageUrl;
+          imageType = cached.imageType ?? null;
+          imageDisclaimer = cached.imageDisclaimer ?? null;
+        }
+      }
+
+      prepared.push({
+        ...input,
+        url: normalizedUrl,
+        urlHost: check.host,
+        imageUrl,
+        imageType,
+        imageDisclaimer,
+        createdAt: now,
+        updatedAt: now,
+      });
     }
 
-    if (!Number.isFinite(price)) continue;
+    const result = upsertDeals(prepared);
 
-    const originalPrice =
-      input.originalPrice !== undefined &&
-      input.originalPrice !== null &&
-      Number(input.originalPrice) > price
-        ? Number(input.originalPrice)
-        : null;
-
-    const discountPercent =
-      originalPrice
-        ? Math.round(((originalPrice - price) / originalPrice) * 100)
-        : null;
-
-    added.push({
-      id: crypto.randomUUID(),
-
-      title: input.title.trim(),
-      price,
-      originalPrice,
-      discountPercent,
-
-      url: check.normalizedUrl,
-      urlHost: check.host,
-
-      retailer: input.retailer ?? "Other",
-      source: input.source ?? "curated",
-      status: input.status ?? "approved",
-      category: input.category ?? "Other",
-
-      imageUrl: input.imageUrl ?? null,
-      imageType: input.imageType ?? null,
-      imageDisclaimer: input.imageDisclaimer ?? null,
-      notes: input.notes ?? null,
-
-      createdAt: now,
-      updatedAt: now,
+    return res.json({
+      ok: true,
+      mode: "upsert",
+      addedCount: result.addedCount,
+      updatedCount: result.updatedCount,
+      total: result.total,
+    });
+  } catch (err) {
+    console.error("[ADMIN BULK] Failed:", err);
+    return res.status(500).json({
+      ok: false,
+      error: "Bulk ingest failed",
     });
   }
-
-  if (added.length) {
-    writeDeals([...existingDeals, ...added]);
-  }
-
-  res.json({ ok: true, addedCount: added.length });
-});
-
-/* =========================
-   UPDATE (PUT)  ✅ BASE44 SAVE
-========================= */
-
-router.put("/admin/deals/:id", (req, res) => {
-  if (!requireAdmin(req, res)) return;
-
-  const { id } = req.params;
-  const updates = req.body || {};
-
-  const store = readDeals();
-  const deals = Array.isArray(store.deals) ? store.deals : [];
-
-  const idx = deals.findIndex(d => d.id === id);
-  if (idx === -1) {
-    return res.status(404).json({ error: "Deal not found" });
-  }
-
-  const existing = deals[idx];
-  const now = new Date().toISOString();
-
-  const updated = {
-    ...existing,
-
-    title:
-      typeof updates.title === "string"
-        ? updates.title.trim()
-        : existing.title,
-
-    price:
-      typeof updates.price === "number"
-        ? updates.price
-        : existing.price,
-
-    originalPrice:
-      typeof updates.originalPrice === "number"
-        ? updates.originalPrice
-        : existing.originalPrice,
-
-    retailer:
-      typeof updates.retailer === "string"
-        ? updates.retailer
-        : existing.retailer,
-
-    category:
-      typeof updates.category === "string"
-        ? updates.category
-        : existing.category,
-
-    status:
-      typeof updates.status === "string"
-        ? updates.status
-        : existing.status,
-
-    imageUrl:
-      typeof updates.imageUrl === "string"
-        ? updates.imageUrl
-        : existing.imageUrl,
-
-    notes:
-      typeof updates.notes === "string"
-        ? updates.notes
-        : existing.notes,
-
-    updatedAt: now,
-  };
-
-  deals[idx] = updated;
-  writeDeals(deals);
-
-  res.json({ ok: true, deal: updated });
-});
-
-/* =========================
-   DELETE (REST)
-========================= */
-
-router.delete("/admin/deals/:id", (req, res) => {
-  if (!requireAdmin(req, res)) return;
-
-  const { id } = req.params;
-
-  const store = readDeals();
-  const deals = Array.isArray(store.deals) ? store.deals : [];
-
-  const idx = deals.findIndex(d => d.id === id);
-  if (idx === -1) {
-    return res.status(404).json({ error: "Deal not found" });
-  }
-
-  const removed = deals.splice(idx, 1)[0];
-  writeDeals(deals);
-
-  res.json({ ok: true, deletedId: removed.id });
-});
-
-/* =========================
-   DELETE (Base44 COMPAT)
-========================= */
-
-router.post("/admin/deals/:id/delete", (req, res) => {
-  if (!requireAdmin(req, res)) return;
-
-  const { id } = req.params;
-
-  const store = readDeals();
-  const deals = Array.isArray(store.deals) ? store.deals : [];
-
-  const idx = deals.findIndex(d => d.id === id);
-  if (idx === -1) {
-    return res.status(404).json({ error: "Deal not found" });
-  }
-
-  const removed = deals.splice(idx, 1)[0];
-  writeDeals(deals);
-
-  res.json({ ok: true, deletedId: removed.id });
 });
 
 export default router;
