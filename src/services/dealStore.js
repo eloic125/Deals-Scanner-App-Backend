@@ -1,10 +1,15 @@
 import fs from "fs";
 import path from "path";
 import crypto from "node:crypto";
-import { DEALS_FILE as DEFAULT_DEALS_FILE } from "../config/paths.js";
+import { DEALS_FILE } from "../config/paths.js";
 
-const ACTIVE_DEALS_FILE =
-  process.env.DEALS_FILE?.trim() || DEFAULT_DEALS_FILE;
+/* =====================================================
+   SINGLE SOURCE OF TRUTH (NO ENV OVERRIDE)
+===================================================== */
+
+// 🔒 IMPORTANT: we DO NOT allow DEALS_FILE env override
+// This prevents ghost data and split stores
+const ACTIVE_DEALS_FILE = DEALS_FILE;
 
 /* =========================
    INIT
@@ -16,7 +21,7 @@ function ensureStore() {
   if (!fs.existsSync(ACTIVE_DEALS_FILE)) {
     fs.writeFileSync(
       ACTIVE_DEALS_FILE,
-      JSON.stringify({ updatedAt: new Date().toISOString(), deals: [] }, null, 2)
+      JSON.stringify({ updatedAt: null, deals: [] }, null, 2)
     );
   }
 }
@@ -41,13 +46,25 @@ function normalizeUrl(url) {
   }
 }
 
+/**
+ * Deterministic unique key
+ * Priority:
+ * 1. sourceKey (BEST)
+ * 2. ASIN
+ * 3. normalized URL
+ * 4. normalized title
+ */
 export function getDealKey(deal) {
   if (deal.sourceKey) return `source:${deal.sourceKey}`;
   if (deal.asin) return `asin:${deal.asin}`;
   const u = normalizeUrl(deal.url);
   if (u) return `url:${u}`;
   if (deal.title) return `title:${normalize(deal.title)}`;
-  return crypto.createHash("sha1").update(JSON.stringify(deal)).digest("hex");
+
+  return crypto
+    .createHash("sha1")
+    .update(JSON.stringify(deal))
+    .digest("hex");
 }
 
 /* =========================
@@ -62,25 +79,37 @@ export function writeDeals(deals) {
   ensureStore();
   fs.writeFileSync(
     ACTIVE_DEALS_FILE,
-    JSON.stringify({ updatedAt: new Date().toISOString(), deals }, null, 2)
+    JSON.stringify(
+      {
+        updatedAt: new Date().toISOString(),
+        deals,
+      },
+      null,
+      2
+    )
   );
 }
 
 /* =========================
-   UPSERT (THIS WAS MISSING)
+   UPSERT (CANONICAL)
 ========================= */
 export function upsertDeals(incoming = []) {
   const store = readDeals();
   const existing = store.deals || [];
 
   const map = new Map();
-  for (const d of existing) map.set(getDealKey(d), d);
+
+  // index existing
+  for (const d of existing) {
+    map.set(getDealKey(d), d);
+  }
 
   let addedCount = 0;
   let updatedCount = 0;
 
   for (const deal of incoming) {
     const key = getDealKey(deal);
+
     if (map.has(key)) {
       Object.assign(map.get(key), deal);
       updatedCount++;
@@ -93,5 +122,18 @@ export function upsertDeals(incoming = []) {
   const merged = [...map.values()];
   writeDeals(merged);
 
-  return { addedCount, updatedCount, total: merged.length };
+  return {
+    ok: true,
+    addedCount,
+    updatedCount,
+    total: merged.length,
+  };
+}
+
+/* =========================
+   HARD RESET (OPTIONAL BUT GOLD)
+========================= */
+export function resetDeals() {
+  writeDeals([]);
+  return { ok: true, total: 0 };
 }
