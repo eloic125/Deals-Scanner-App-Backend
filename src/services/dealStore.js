@@ -1,46 +1,151 @@
 import fs from "fs";
 import path from "path";
-import { DATA_DIR, DEALS_FILE as DEFAULT_DEALS_FILE } from "../config/paths.js";
+import crypto from "crypto";
+import { DEALS_FILE as DEFAULT_DEALS_FILE } from "../config/paths.js";
 
-// Render disk path (if provided), otherwise local default
-const ACTIVE_DEALS_FILE = process.env.DEALS_FILE?.trim() || DEFAULT_DEALS_FILE;
+/* =========================
+   CONFIG
+========================= */
 
-// Ensure data directory and deals.json exist
+const ACTIVE_DEALS_FILE =
+  process.env.DEALS_FILE?.trim() || DEFAULT_DEALS_FILE;
+
+/* =========================
+   INIT
+========================= */
+
 function ensureStore() {
   const dir = path.dirname(ACTIVE_DEALS_FILE);
 
-  // Make sure the parent directory exists
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  // Create file if missing
   if (!fs.existsSync(ACTIVE_DEALS_FILE)) {
-    const initial = {
-      updatedAt: new Date().toISOString(),
-      deals: [],
-    };
-    fs.writeFileSync(ACTIVE_DEALS_FILE, JSON.stringify(initial, null, 2), "utf8");
+    fs.writeFileSync(
+      ACTIVE_DEALS_FILE,
+      JSON.stringify(
+        {
+          updatedAt: new Date().toISOString(),
+          deals: [],
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+  }
+}
+
+/* =========================
+   HELPERS
+========================= */
+
+function normalize(str) {
+  return String(str || "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[^a-z0-9]/g, "")
+    .trim();
+}
+
+function normalizeUrl(url) {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    u.search = "";
+    u.hash = "";
+    return u.toString().toLowerCase();
+  } catch {
+    return null;
   }
 }
 
 /**
- * Read deals.json
+ * Canonical dedup key
  */
-export function readDeals() {
-  ensureStore();
-  const raw = fs.readFileSync(ACTIVE_DEALS_FILE, "utf8");
-  return JSON.parse(raw);
+export function getDealKey(deal) {
+  if (deal.sourceKey) return `source:${deal.sourceKey}`;
+  if (deal.asin) return `asin:${deal.asin}`;
+
+  const url = normalizeUrl(deal.url);
+  if (url) return `url:${url}`;
+
+  if (deal.title) return `title:${normalize(deal.title)}`;
+
+  return crypto
+    .createHash("sha1")
+    .update(JSON.stringify(deal))
+    .digest("hex");
 }
 
-/**
- * Write deals.json
- */
+/* =========================
+   READ / WRITE
+========================= */
+
+export function readDeals() {
+  ensureStore();
+  return JSON.parse(fs.readFileSync(ACTIVE_DEALS_FILE, "utf8"));
+}
+
 export function writeDeals(deals) {
   ensureStore();
-  const payload = {
-    updatedAt: new Date().toISOString(),
-    deals,
+  fs.writeFileSync(
+    ACTIVE_DEALS_FILE,
+    JSON.stringify(
+      {
+        updatedAt: new Date().toISOString(),
+        deals,
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+}
+
+/* =========================
+   UPSERT (ADMIN BULK)
+========================= */
+
+export function upsertDeals(incomingDeals = []) {
+  const store = readDeals();
+  const existing = Array.isArray(store.deals) ? store.deals : [];
+
+  const index = new Map();
+
+  for (const d of existing) {
+    index.set(getDealKey(d), d);
+  }
+
+  let addedCount = 0;
+  let updatedCount = 0;
+
+  for (const deal of incomingDeals) {
+    const key = getDealKey(deal);
+
+    if (index.has(key)) {
+      Object.assign(index.get(key), deal, {
+        updatedAt: new Date().toISOString(),
+      });
+      updatedCount++;
+    } else {
+      index.set(key, {
+        ...deal,
+        id: deal.id || crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      addedCount++;
+    }
+  }
+
+  const merged = Array.from(index.values());
+  writeDeals(merged);
+
+  return {
+    addedCount,
+    updatedCount,
+    total: merged.length,
   };
-  fs.writeFileSync(ACTIVE_DEALS_FILE, JSON.stringify(payload, null, 2), "utf8");
 }
