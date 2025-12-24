@@ -1,15 +1,11 @@
 import express from "express";
+import crypto from "node:crypto";
 import fs from "fs";
 import {
   readDeals,
+  writeDeals,
   upsertDeals,
 } from "../services/dealStore.js";
-import { validateDealLink } from "../services/urlPolicy.js";
-import {
-  getCachedImage,
-  saveCachedImage,
-  productKeyFromUrl,
-} from "../services/productImageStore.js";
 
 const router = express.Router();
 
@@ -28,7 +24,7 @@ function readSecretFile(filename) {
 }
 
 const ADMIN_KEY =
-  process.env.ADMIN_KEY?.trim() ||
+  (process.env.ADMIN_KEY && process.env.ADMIN_KEY.trim()) ||
   readSecretFile("ADMIN_KEY");
 
 if (!ADMIN_KEY) {
@@ -45,87 +41,26 @@ function requireAdmin(req, res) {
 }
 
 /* =========================
-   ADMIN BULK INGEST (SINGLE SOURCE OF TRUTH)
+   ADMIN BULK UPSERT (LIVE)
 ========================= */
 
 router.post("/admin/deals/bulk", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
   try {
-    const inputs = Array.isArray(req.body?.deals)
+    const incoming = Array.isArray(req.body?.deals)
       ? req.body.deals
       : [];
 
-    if (!inputs.length) {
+    if (!incoming.length) {
       return res.status(400).json({
         ok: false,
         error: "No deals provided",
       });
     }
 
-    const now = new Date().toISOString();
-    const prepared = [];
-
-    for (const input of inputs) {
-      // 🔑 SCREENSHOT / AI DEALS (NO URL REQUIRED)
-      if (input.sourceKey && input.title && input.price != null) {
-        prepared.push({
-          ...input,
-          createdAt: now,
-          updatedAt: now,
-        });
-        continue;
-      }
-
-      // 🌐 URL DEALS (EXISTING LOGIC)
-      if (typeof input?.url !== "string") continue;
-
-      const check = validateDealLink({
-        url: input.url,
-        retailer: input.retailer,
-      });
-
-      if (!check.ok) continue;
-
-      const normalizedUrl = check.normalizedUrl;
-      const productKey = productKeyFromUrl(normalizedUrl);
-
-      let imageUrl = null;
-      let imageType = null;
-      let imageDisclaimer = null;
-
-      if (typeof input.imageUrl === "string" && input.imageUrl.trim()) {
-        imageUrl = input.imageUrl.trim();
-        imageType = input.imageType ?? "remote";
-        imageDisclaimer = input.imageDisclaimer ?? null;
-
-        saveCachedImage({
-          url: normalizedUrl,
-          imageUrl,
-          imageType,
-        });
-      } else {
-        const cached = getCachedImage(normalizedUrl);
-        if (cached) {
-          imageUrl = cached.imageUrl;
-          imageType = cached.imageType ?? null;
-          imageDisclaimer = cached.imageDisclaimer ?? null;
-        }
-      }
-
-      prepared.push({
-        ...input,
-        url: normalizedUrl,
-        urlHost: check.host,
-        imageUrl,
-        imageType,
-        imageDisclaimer,
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-
-    const result = upsertDeals(prepared);
+    // 🔥 THIS IS THE REAL UPSERT
+    const result = upsertDeals(incoming);
 
     return res.json({
       ok: true,
@@ -135,12 +70,16 @@ router.post("/admin/deals/bulk", (req, res) => {
       total: result.total,
     });
   } catch (err) {
-    console.error("[ADMIN BULK] Failed:", err);
+    console.error("[ADMIN BULK] Failed:", err.message);
     return res.status(500).json({
       ok: false,
       error: "Bulk ingest failed",
     });
   }
 });
+
+/* =========================
+   EXPORT
+========================= */
 
 export default router;
