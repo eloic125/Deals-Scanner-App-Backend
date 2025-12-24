@@ -2,11 +2,6 @@ import express from "express";
 import crypto from "node:crypto";
 import { readDeals, writeDeals } from "../services/dealStore.js";
 import { validateDealLink } from "../services/urlPolicy.js";
-import {
-  getCachedImage,
-  saveCachedImage,
-  productKeyFromUrl,
-} from "../services/productImageStore.js";
 
 const router = express.Router();
 
@@ -97,11 +92,6 @@ router.put("/admin/deals/:id", (req, res) => {
       typeof updates.imageUrl === "string"
         ? updates.imageUrl
         : existing.imageUrl,
-
-    imageType:
-      typeof updates.imageType === "string"
-        ? updates.imageType
-        : existing.imageType,
 
     notes:
       typeof updates.notes === "string"
