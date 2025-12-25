@@ -13,7 +13,7 @@ const app = express();
 /* =========================
    BOOT MARKER (DO NOT REMOVE)
 ========================= */
-console.log("BOOT VERSION 2025-01-BASE44-CORS-FIX");
+console.log("BOOT VERSION 2025-01-STABLE-PERSISTENT");
 
 /* =========================
    SECURITY
@@ -21,22 +21,27 @@ console.log("BOOT VERSION 2025-01-BASE44-CORS-FIX");
 app.use(helmet());
 
 /* =========================
+   BODY PARSER (REQUIRED)
+========================= */
+app.use(express.json({ limit: "1mb" }));
+
+/* =========================
    CORS (BASE44 + PROD + DEV)
 ========================= */
 app.use(
   cors({
     origin: (origin, cb) => {
-      // allow server-to-server (curl, render internal)
+      // server-to-server (curl, internal, render)
       if (!origin) return cb(null, true);
 
-      // production
+      // production domains
       if (origin === "https://dealsscanner.ca") return cb(null, origin);
       if (origin === "https://www.dealsscanner.ca") return cb(null, origin);
 
       // Base44 editor
       if (origin === "https://app.base44.com") return cb(null, origin);
 
-      // Base44 preview sandboxes
+      // Base44 preview sandboxes (*.base44.app)
       try {
         const u = new URL(origin);
         if (u.hostname.endsWith(".base44.app")) {
@@ -44,7 +49,7 @@ app.use(
         }
       } catch {}
 
-      // local dev
+      // local development
       if (
         origin.startsWith("http://localhost:") ||
         origin.startsWith("http://127.0.0.1:")
@@ -52,7 +57,7 @@ app.use(
         return cb(null, origin);
       }
 
-      return cb(new Error("CORS blocked: origin not allowed"));
+      return cb(new Error("CORS blocked"));
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: [
@@ -67,18 +72,12 @@ app.use(
 );
 
 /* =========================
-   PREFLIGHT (Node 22 FIX)
+   PREFLIGHT (NODE 22 SAFE)
 ========================= */
-// IMPORTANT: "*" crashes Express on Node 22
 app.options(/.*/, cors());
 
 /* =========================
-   BODY PARSER
-========================= */
-app.use(express.json({ limit: "100kb" }));
-
-/* =========================
-   ROUTES (ROOT)
+   ROUTES — ROOT
 ========================= */
 app.use("/", healthRoutes);
 app.use("/", dealsRoutes);
@@ -86,7 +85,7 @@ app.use("/", redirectRoutes);
 app.use("/", adminRoutes);
 
 /* =========================
-   ROUTES (/api)
+   ROUTES — /api
 ========================= */
 app.use("/api", healthRoutes);
 app.use("/api", dealsRoutes);
@@ -94,7 +93,7 @@ app.use("/api", redirectRoutes);
 app.use("/api", adminRoutes);
 
 /* =========================
-   ROUTES (/api/v1)
+   ROUTES — /api/v1
 ========================= */
 app.use("/api/v1", healthRoutes);
 app.use("/api/v1", dealsRoutes);
@@ -102,11 +101,11 @@ app.use("/api/v1", redirectRoutes);
 app.use("/api/v1", adminRoutes);
 
 /* =========================
-   CORS ERROR CLEANUP
+   CORS ERROR HANDLER
 ========================= */
 app.use((err, req, res, next) => {
-  if (err && err.message === "CORS blocked: origin not allowed") {
-    return res.status(403).json({ error: "CORS blocked: origin not allowed" });
+  if (err && err.message === "CORS blocked") {
+    return res.status(403).json({ error: "CORS blocked" });
   }
   return next(err);
 });
@@ -117,5 +116,5 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log("Server running on port", PORT);
+  console.log(`✅ Server running on port ${PORT}`);
 });

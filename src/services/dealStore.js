@@ -4,31 +4,41 @@ import crypto from "node:crypto";
 import { DEALS_FILE } from "../config/paths.js";
 
 /* =====================================================
-   SINGLE SOURCE OF TRUTH (NO ENV OVERRIDE)
+   ACTIVE DATA FILE
 ===================================================== */
 
-// 🔒 IMPORTANT: we DO NOT allow DEALS_FILE env override
-// This prevents ghost data and split stores
 const ACTIVE_DEALS_FILE = DEALS_FILE;
 
-/* =========================
-   INIT
-========================= */
+/* =====================================================
+   FILE INIT
+===================================================== */
+
 function ensureStore() {
   const dir = path.dirname(ACTIVE_DEALS_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
 
   if (!fs.existsSync(ACTIVE_DEALS_FILE)) {
     fs.writeFileSync(
       ACTIVE_DEALS_FILE,
-      JSON.stringify({ updatedAt: null, deals: [] }, null, 2)
+      JSON.stringify(
+        {
+          updatedAt: new Date().toISOString(),
+          deals: [],
+        },
+        null,
+        2
+      )
     );
   }
 }
 
-/* =========================
-   HELPERS
-========================= */
+/* =====================================================
+   NORMALIZATION
+===================================================== */
+
 function normalize(str) {
   return String(str || "")
     .toLowerCase()
@@ -46,19 +56,19 @@ function normalizeUrl(url) {
   }
 }
 
-/**
- * Deterministic unique key
- * Priority:
- * 1. sourceKey (BEST)
- * 2. ASIN
- * 3. normalized URL
- * 4. normalized title
- */
+/* =====================================================
+   UNIQUE DEAL KEY
+===================================================== */
+
 export function getDealKey(deal) {
+  if (!deal) return null;
+
   if (deal.sourceKey) return `source:${deal.sourceKey}`;
   if (deal.asin) return `asin:${deal.asin}`;
+
   const u = normalizeUrl(deal.url);
   if (u) return `url:${u}`;
+
   if (deal.title) return `title:${normalize(deal.title)}`;
 
   return crypto
@@ -67,22 +77,44 @@ export function getDealKey(deal) {
     .digest("hex");
 }
 
-/* =========================
-   READ / WRITE
-========================= */
+/* =====================================================
+   READ
+===================================================== */
+
 export function readDeals() {
   ensureStore();
-  return JSON.parse(fs.readFileSync(ACTIVE_DEALS_FILE, "utf8"));
+
+  try {
+    const raw = fs.readFileSync(ACTIVE_DEALS_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+
+    return {
+      updatedAt: parsed.updatedAt || new Date().toISOString(),
+      deals: Array.isArray(parsed.deals) ? parsed.deals : [],
+    };
+  } catch (err) {
+    console.error("readDeals failed:", err);
+    return { updatedAt: new Date().toISOString(), deals: [] };
+  }
 }
 
-export function writeDeals(deals) {
+/* =====================================================
+   WRITE
+===================================================== */
+
+export function writeDeals(dealsArray) {
   ensureStore();
+
+  if (!Array.isArray(dealsArray)) {
+    throw new Error("writeDeals expects an array");
+  }
+
   fs.writeFileSync(
     ACTIVE_DEALS_FILE,
     JSON.stringify(
       {
         updatedAt: new Date().toISOString(),
-        deals,
+        deals: dealsArray,
       },
       null,
       2
@@ -90,16 +122,20 @@ export function writeDeals(deals) {
   );
 }
 
-/* =========================
-   UPSERT (CANONICAL)
-========================= */
+/* =====================================================
+   UPSERT (CREATES OR UPDATES)
+===================================================== */
+
 export function upsertDeals(incoming = []) {
+  if (!Array.isArray(incoming)) {
+    throw new Error("upsertDeals expects an array");
+  }
+
   const store = readDeals();
-  const existing = store.deals || [];
+  const existing = Array.isArray(store.deals) ? store.deals : [];
 
   const map = new Map();
 
-  // index existing
   for (const d of existing) {
     map.set(getDealKey(d), d);
   }
@@ -107,19 +143,42 @@ export function upsertDeals(incoming = []) {
   let addedCount = 0;
   let updatedCount = 0;
 
-  for (const deal of incoming) {
-    const key = getDealKey(deal);
+  for (const raw of incoming) {
+    if (!raw) continue;
+
+    const key = getDealKey(raw);
+    if (!key) continue;
+
+    const now = new Date().toISOString();
 
     if (map.has(key)) {
-      Object.assign(map.get(key), deal);
+      const current = map.get(key);
+
+      map.set(key, {
+        ...current,
+        ...raw,
+        id: current.id, // preserve ID
+        status: current.status || "approved",
+        updatedAt: now,
+      });
+
       updatedCount++;
     } else {
-      map.set(key, deal);
+      map.set(key, {
+        id: crypto.randomUUID(),
+        status: raw.status || "approved",
+        expiresAt: raw.expiresAt || null,
+        createdAt: now,
+        updatedAt: now,
+        ...raw,
+      });
+
       addedCount++;
     }
   }
 
-  const merged = [...map.values()];
+  const merged = Array.from(map.values());
+
   writeDeals(merged);
 
   return {
@@ -130,9 +189,10 @@ export function upsertDeals(incoming = []) {
   };
 }
 
-/* =========================
-   HARD RESET (OPTIONAL BUT GOLD)
-========================= */
+/* =====================================================
+   RESET STORE (ADMIN)
+===================================================== */
+
 export function resetDeals() {
   writeDeals([]);
   return { ok: true, total: 0 };

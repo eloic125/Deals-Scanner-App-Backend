@@ -1,13 +1,19 @@
 import express from "express";
 import fs from "fs";
 import crypto from "node:crypto";
-import { readDeals, writeDeals, getDealKey } from "../services/dealStore.js";
+
+import {
+  readDeals,
+  writeDeals,
+  getDealKey,
+  upsertDeals,
+} from "../services/dealStore.js";
 
 const router = express.Router();
 
-/* =========================
+/* =====================================================
    ADMIN AUTH
-========================= */
+===================================================== */
 
 function readSecretFile(filename) {
   try {
@@ -35,10 +41,6 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-/* =========================
-   HELPERS
-========================= */
-
 function normalize(v) {
   return String(v || "").trim();
 }
@@ -51,123 +53,132 @@ function matchesDeal(deal, idOrKey) {
   );
 }
 
-/* =========================
-   BULK UPSERT (CREATE + EDIT)
-========================= */
+/* =====================================================
+   CREATE — POST /admin/deals
+===================================================== */
+
+router.post("/admin/deals", requireAdmin, (req, res) => {
+  const body = req.body || {};
+
+  const store = readDeals();
+  const deals = Array.isArray(store.deals) ? store.deals : [];
+
+  const now = new Date().toISOString();
+
+  const deal = {
+    id: body.id || crypto.randomUUID(),
+    title: body.title || "Untitled",
+    price: body.price ? Number(body.price) : 0,
+    originalPrice: body.originalPrice
+      ? Number(body.originalPrice)
+      : null,
+    retailer: body.retailer || "Unknown",
+    category: body.category || "Other",
+    imageUrl: body.imageUrl || "",
+    url: body.url || "",
+    notes: body.notes || "",
+    status: body.status || "approved",
+    expiresAt: body.expiresAt || null,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  // Add NEW DEAL to top
+  deals.unshift(deal);
+
+  writeDeals(deals);
+
+  res.json({ ok: true, deal });
+});
+
+/* =====================================================
+   BULK UPSERT — POST /admin/deals/bulk
+===================================================== */
 
 router.post("/admin/deals/bulk", requireAdmin, (req, res) => {
-  const mode = String(req.query.mode || "").toLowerCase();
   const incoming = Array.isArray(req.body?.deals) ? req.body.deals : [];
 
   if (!incoming.length) {
     return res.status(400).json({ error: "No deals provided" });
   }
 
-  const store = readDeals();
-  const existing = Array.isArray(store.deals) ? store.deals : [];
-
-  const map = new Map();
-  for (const d of existing) {
-    map.set(getDealKey(d), d);
-  }
-
-  let addedCount = 0;
-  let updatedCount = 0;
-
-  for (const deal of incoming) {
-    const key = getDealKey(deal);
-    if (!key) continue;
-
-    if (mode === "upsert" && map.has(key)) {
-      Object.assign(map.get(key), deal, {
-        updatedAt: new Date().toISOString(),
-      });
-      updatedCount++;
-    } else {
-      map.set(key, {
-        id: deal.id || crypto.randomUUID(),
-        ...deal,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-      addedCount++;
-    }
-  }
-
-  const merged = Array.from(map.values());
-  writeDeals(merged);
-
-  res.json({
-    ok: true,
-    mode: mode || "insert",
-    addedCount,
-    updatedCount,
-    total: merged.length,
-  });
+  const result = upsertDeals(incoming);
+  res.json(result);
 });
 
-/* =========================
-   UPDATE DEAL (EDIT)
-========================= */
+/* =====================================================
+   UPDATE — PUT /admin/deals/:id
+===================================================== */
 
 router.put("/admin/deals/:id", requireAdmin, (req, res) => {
   const id = normalize(req.params.id);
-  const store = readDeals();
 
-  const deal = store.deals.find(d => matchesDeal(d, id));
+  const store = readDeals();
+  const deals = store.deals;
+
+  const deal = deals.find((d) => matchesDeal(d, id));
   if (!deal) return res.status(404).json({ error: "Deal not found" });
 
   Object.assign(deal, req.body, {
     updatedAt: new Date().toISOString(),
   });
 
-  writeDeals(store.deals);
+  writeDeals(deals);
+
   res.json({ ok: true, deal });
 });
 
-/* =========================
-   DELETE DEAL (BASE44 + REST)
-========================= */
+/* =====================================================
+   DELETE (Base44 button) — POST /admin/deals/:id/delete
+===================================================== */
 
-/* Base44 REQUIRED format */
 router.post("/admin/deals/:id/delete", requireAdmin, (req, res) => {
   const id = normalize(req.params.id);
-  const store = readDeals();
 
+  const store = readDeals();
   const before = store.deals.length;
-  const filtered = store.deals.filter(d => !matchesDeal(d, id));
+
+  const filtered = store.deals.filter((d) => !matchesDeal(d, id));
 
   if (filtered.length === before) {
     return res.status(404).json({ error: "Deal not found" });
   }
 
   writeDeals(filtered);
+
   res.json({ ok: true, deleted: before - filtered.length });
 });
 
-/* REST / manual delete */
+/* =====================================================
+   DELETE (REST) — DELETE /admin/deals?id=...
+===================================================== */
+
 router.delete("/admin/deals", requireAdmin, (req, res) => {
   const key = normalize(req.query.sourceKey || req.query.id);
+
   if (!key) {
-    return res.status(400).json({ error: "id or sourceKey required" });
+    return res
+      .status(400)
+      .json({ error: "id or sourceKey required" });
   }
 
   const store = readDeals();
   const before = store.deals.length;
 
-  const filtered = store.deals.filter(d => !matchesDeal(d, key));
+  const filtered = store.deals.filter((d) => !matchesDeal(d, key));
 
   if (filtered.length === before) {
     return res.status(404).json({ error: "Deal not found" });
   }
 
   writeDeals(filtered);
+
   res.json({ ok: true, deleted: before - filtered.length });
 });
 
-/* =========================
-   ADMIN LIST (DEBUG)
-========================= */
+/* =====================================================
+   ADMIN LIST — GET /admin/deals
+===================================================== */
 
 router.get("/admin/deals", requireAdmin, (req, res) => {
   res.json(readDeals());
