@@ -83,7 +83,7 @@ router.post("/admin/deals", requireAdmin, (req, res) => {
     updatedAt: now,
   };
 
-  // Add NEW DEAL to top
+  // add to TOP
   deals.unshift(deal);
 
   writeDeals(deals);
@@ -129,7 +129,28 @@ router.put("/admin/deals/:id", requireAdmin, (req, res) => {
 });
 
 /* =====================================================
-   DELETE (Base44 button) — POST /admin/deals/:id/delete
+   DELETE — DELETE /admin/deals/:id   (Base44 + REST)
+===================================================== */
+
+router.delete("/admin/deals/:id", requireAdmin, (req, res) => {
+  const id = normalize(req.params.id);
+
+  const store = readDeals();
+  const before = store.deals.length;
+
+  const filtered = store.deals.filter((d) => !matchesDeal(d, id));
+
+  if (filtered.length === before) {
+    return res.status(404).json({ error: "Deal not found" });
+  }
+
+  writeDeals(filtered);
+
+  res.json({ ok: true, deleted: before - filtered.length });
+});
+
+/* =====================================================
+   DELETE — POST /admin/deals/:id/delete  (Base44 older)
 ===================================================== */
 
 router.post("/admin/deals/:id/delete", requireAdmin, (req, res) => {
@@ -150,7 +171,7 @@ router.post("/admin/deals/:id/delete", requireAdmin, (req, res) => {
 });
 
 /* =====================================================
-   DELETE (REST) — DELETE /admin/deals?id=...
+   DELETE — DELETE /admin/deals?id=...
 ===================================================== */
 
 router.delete("/admin/deals", requireAdmin, (req, res) => {
