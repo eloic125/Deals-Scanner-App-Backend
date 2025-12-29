@@ -11,7 +11,7 @@ const router = express.Router();
 const ADMIN_KEY = process.env.ADMIN_KEY?.trim();
 
 if (!ADMIN_KEY) {
-  console.error("ADMIN_KEY is missing");
+  console.error("ADMIN_KEY missing — backend cannot run.");
   process.exit(1);
 }
 
@@ -26,9 +26,6 @@ function requireAdmin(req, res) {
 
 /* =========================
    AMAZON URL NORMALIZER
-   ✨ NEW VERSION
-   - Keeps marketplace region (.ca, .com, .co.uk, etc.)
-   - Canonical: https://www.amazon.xx/dp/<ASIN>?tag=...
 ========================= */
 
 function normalizeAmazonUrl(inputUrl) {
@@ -39,34 +36,22 @@ function normalizeAmazonUrl(inputUrl) {
     const u = new URL(url.startsWith("http") ? url : `https://${url}`);
     const host = u.hostname.toLowerCase();
 
-    // Not Amazon? return as-is (just cleaned)
     if (!host.includes("amazon.")) {
       u.hash = "";
       return u.toString();
     }
 
-    // Extract ASIN
     const match =
       u.pathname.match(/\/dp\/([A-Z0-9]{10})/i) ||
       u.pathname.match(/\/gp\/product\/([A-Z0-9]{10})/i);
 
     const asin = match?.[1]?.toUpperCase();
+    if (!asin) return u.toString();
 
-    // If no ASIN → return cleaned link instead of breaking
-    if (!asin) {
-      u.hash = "";
-      return u.toString();
-    }
-
-    // Preserve marketplace
-    let marketplace = host;
-
+    let marketplace = "www.amazon.com";
     if (host.includes("amazon.ca")) marketplace = "www.amazon.ca";
-    else if (host.includes("amazon.com")) marketplace = "www.amazon.com";
-    else if (host.includes("amazon.co.uk")) marketplace = "www.amazon.co.uk";
-    else marketplace = host;
+    if (host.includes("amazon.co.uk")) marketplace = "www.amazon.co.uk";
 
-    // Keep affiliate tag
     const tag = u.searchParams.get("tag");
 
     const out = new URL(`https://${marketplace}/dp/${asin}`);
@@ -79,7 +64,16 @@ function normalizeAmazonUrl(inputUrl) {
 }
 
 /* =========================
-   GET DEALS (PUBLIC)
+   ENSURE REPORT STORE
+========================= */
+
+function ensureReports(store) {
+  if (!Array.isArray(store.reports)) store.reports = [];
+  return store;
+}
+
+/* =========================
+   PUBLIC — GET DEALS
 ========================= */
 
 router.get("/deals", (req, res) => {
@@ -88,7 +82,7 @@ router.get("/deals", (req, res) => {
 
   const now = Date.now();
 
-  const visibleDeals = deals.filter(d => {
+  const visible = deals.filter(d => {
     if (d.status !== "approved") return false;
     if (d.expiresAt && new Date(d.expiresAt).getTime() <= now) return false;
     return true;
@@ -96,9 +90,65 @@ router.get("/deals", (req, res) => {
 
   res.json({
     updatedAt: store.updatedAt || new Date().toISOString(),
-    count: visibleDeals.length,
-    deals: visibleDeals,
+    count: visible.length,
+    deals: visible
   });
+});
+
+/* =========================
+   FRONTEND DEAL DETAILS SAFE
+========================= */
+
+router.get("/deals/:id", (req, res) => {
+  const { id } = req.params;
+
+  const store = readDeals();
+  const deals = Array.isArray(store.deals) ? store.deals : [];
+
+  const deal = deals.find(d => d.id === id);
+
+  if (!deal)
+    return res.json({
+      missing: true,
+      message: "Deal not found (maybe deleted)"
+    });
+
+  res.json(deal);
+});
+
+/* =========================
+   USER REPORT DEAL
+========================= */
+
+router.post("/deals/:id/report", (req, res) => {
+  const { id } = req.params;
+  const body = req.body || {};
+  const store = ensureReports(readDeals());
+  const deals = store.deals || [];
+
+  const deal = deals.find(d => d.id === id);
+
+  if (!deal)
+    return res.status(404).json({ error: "Deal not found" });
+
+  if (!body.reason)
+    return res.status(400).json({ error: "reason is required" });
+
+  const report = {
+    id: crypto.randomUUID(),
+    dealId: id,
+    reason: String(body.reason),
+    notes: body.notes ? String(body.notes) : null,
+    userId: body.userId || null,
+    status: "pending",
+    user_seen: false,
+    createdAt: new Date().toISOString()
+  };
+
+  store.reports.push(report);
+  writeDeals(store);
+
+  res.json({ ok: true, report });
 });
 
 /* =========================
@@ -108,43 +158,34 @@ router.get("/deals", (req, res) => {
 router.post("/admin/deals", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const input = req.body || {};
+  const body = req.body || {};
 
-  if (!input.title || typeof input.price !== "number") {
-    return res
-      .status(400)
-      .json({ error: "Missing required fields: title, price(number)" });
-  }
+  if (!body.title || typeof body.price !== "number")
+    return res.status(400).json({
+      error: "title and price required"
+    });
 
   const store = readDeals();
-  const deals = Array.isArray(store.deals) ? store.deals : [];
-
   const now = new Date().toISOString();
-
-  const url = input.url ? normalizeAmazonUrl(input.url) : null;
 
   const deal = {
     id: crypto.randomUUID(),
-    title: String(input.title).trim(),
-    price: input.price,
-    originalPrice:
-      typeof input.originalPrice === "number" ? input.originalPrice : null,
-    retailer: typeof input.retailer === "string" ? input.retailer : "Amazon",
-    category: typeof input.category === "string" ? input.category : "General",
-    imageUrl: typeof input.imageUrl === "string" ? input.imageUrl : null,
-    notes: typeof input.notes === "string" ? input.notes : null,
-    url,
-
+    title: String(body.title),
+    price: body.price,
+    originalPrice: body.originalPrice || null,
+    retailer: body.retailer || "Amazon",
+    category: body.category || "General",
+    imageUrl: body.imageUrl || null,
+    notes: body.notes || null,
+    url: normalizeAmazonUrl(body.url),
     status: "approved",
-    expiresAt: null,
-
     createdAt: now,
     updatedAt: now,
+    expiresAt: null
   };
 
-  deals.unshift(deal);
-
-  writeDeals(deals);
+  store.deals.unshift(deal);
+  writeDeals(store);
 
   res.status(201).json({ ok: true, deal });
 });
@@ -158,88 +199,44 @@ router.put("/admin/deals/:id", (req, res) => {
 
   const { id } = req.params;
   const updates = req.body || {};
-
   const store = readDeals();
-  const deals = Array.isArray(store.deals) ? store.deals : [];
 
-  const idx = deals.findIndex(d => d.id === id);
+  const idx = store.deals.findIndex(d => d.id === id);
   if (idx === -1) return res.status(404).json({ error: "Deal not found" });
 
-  const now = new Date().toISOString();
-
   const next = {
-    ...deals[idx],
+    ...store.deals[idx],
     ...updates,
-    updatedAt: now,
+    updatedAt: new Date().toISOString()
   };
 
-  if (typeof updates.url === "string") {
-    next.url = normalizeAmazonUrl(updates.url);
-  }
+  if (updates.url) next.url = normalizeAmazonUrl(updates.url);
 
-  deals[idx] = next;
+  store.deals[idx] = next;
 
-  writeDeals(deals);
-
+  writeDeals(store);
   res.json({ ok: true, deal: next });
 });
 
 /* =========================
-   DELETE DEAL (ADMIN)
+   DISABLE DEAL (ADMIN)
 ========================= */
 
 router.delete("/admin/deals/:id", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
   const { id } = req.params;
-
   const store = readDeals();
-  const deals = Array.isArray(store.deals) ? store.deals : [];
 
-  const idx = deals.findIndex(d => d.id === id);
+  const idx = store.deals.findIndex(d => d.id === id);
   if (idx === -1) return res.status(404).json({ error: "Deal not found" });
 
-  const now = new Date().toISOString();
+  store.deals[idx].status = "disabled";
+  store.deals[idx].expiresAt = new Date().toISOString();
+  store.deals[idx].updatedAt = new Date().toISOString();
 
-  deals[idx] = {
-    ...deals[idx],
-    status: "disabled",
-    expiresAt: now,
-    updatedAt: now,
-  };
-
-  writeDeals(deals);
-
-  res.json({ ok: true, disabledId: id });
-});
-
-/* =========================
-   BASE44 COMPAT DELETE
-========================= */
-
-router.post("/admin/deals/:id/delete", (req, res) => {
-  if (!requireAdmin(req, res)) return;
-
-  const { id } = req.params;
-
-  const store = readDeals();
-  const deals = Array.isArray(store.deals) ? store.deals : [];
-
-  const idx = deals.findIndex(d => d.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Deal not found" });
-
-  const now = new Date().toISOString();
-
-  deals[idx] = {
-    ...deals[idx],
-    status: "disabled",
-    expiresAt: now,
-    updatedAt: now,
-  };
-
-  writeDeals(deals);
-
-  res.json({ ok: true, disabledId: id });
+  writeDeals(store);
+  res.json({ ok: true });
 });
 
 export default router;

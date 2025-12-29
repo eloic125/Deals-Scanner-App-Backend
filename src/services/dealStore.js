@@ -8,6 +8,38 @@ import { DEALS_FILE } from "../config/paths.js";
 ===================================================== */
 
 const ACTIVE_DEALS_FILE = DEALS_FILE;
+const BACKUP_FILE = `${ACTIVE_DEALS_FILE}.bak`;
+
+console.log("💾 Using deals file:", ACTIVE_DEALS_FILE);
+
+/* =====================================================
+   AUTO-MIGRATION (COPY OLD FILE → /data ONCE)
+===================================================== */
+
+try {
+  // Possible old locations
+  const OLD_FILES = [
+    path.join(process.cwd(), "src", "data", "deals.json"),
+    path.join(process.cwd(), "src", "src", "data", "deals.json"),
+  ];
+
+  console.log("🔍 Checking migration locations:", OLD_FILES);
+
+  const oldFile = OLD_FILES.find(f => fs.existsSync(f));
+
+  if (!fs.existsSync(ACTIVE_DEALS_FILE) && oldFile) {
+    fs.mkdirSync(path.dirname(ACTIVE_DEALS_FILE), { recursive: true });
+    fs.copyFileSync(oldFile, ACTIVE_DEALS_FILE);
+    console.log("✨ Migrated deals.json to /data automatically:", oldFile);
+  } else {
+    console.log("⚠️ Migration skipped. Exists?:", {
+      newFileExists: fs.existsSync(ACTIVE_DEALS_FILE),
+      foundOldFile: oldFile,
+    });
+  }
+} catch (err) {
+  console.warn("Migration failed:", err.message);
+}
 
 /* =====================================================
    FILE INIT
@@ -27,6 +59,7 @@ function ensureStore() {
         {
           updatedAt: new Date().toISOString(),
           deals: [],
+          reports: [],
         },
         null,
         2
@@ -36,7 +69,7 @@ function ensureStore() {
 }
 
 /* =====================================================
-   NORMALIZATION
+   HELPERS
 ===================================================== */
 
 function normalize(str) {
@@ -91,30 +124,74 @@ export function readDeals() {
     return {
       updatedAt: parsed.updatedAt || new Date().toISOString(),
       deals: Array.isArray(parsed.deals) ? parsed.deals : [],
+      reports: Array.isArray(parsed.reports) ? parsed.reports : [],
     };
   } catch (err) {
     console.error("readDeals failed:", err);
-    return { updatedAt: new Date().toISOString(), deals: [] };
+
+    return {
+      updatedAt: new Date().toISOString(),
+      deals: [],
+      reports: [],
+    };
   }
 }
 
 /* =====================================================
-   WRITE
+   INTERNAL BACKUP
 ===================================================== */
 
-export function writeDeals(dealsArray) {
+function backupCurrentFile() {
+  try {
+    if (fs.existsSync(ACTIVE_DEALS_FILE)) {
+      fs.copyFileSync(ACTIVE_DEALS_FILE, BACKUP_FILE);
+      console.log("📦 Backup created:", BACKUP_FILE);
+    }
+  } catch (err) {
+    console.warn("Backup failed:", err.message);
+  }
+}
+
+/* =====================================================
+   WRITE — PROTECTED
+===================================================== */
+
+export function writeDeals(input) {
   ensureStore();
 
-  if (!Array.isArray(dealsArray)) {
-    throw new Error("writeDeals expects an array");
+  const current = readDeals();
+  const currentDeals = Array.isArray(current.deals) ? current.deals : [];
+  const currentReports = Array.isArray(current.reports) ? current.reports : [];
+
+  let deals = [];
+  let reports = currentReports;
+
+  if (Array.isArray(input)) {
+    deals = input;
+  } else if (input && typeof input === "object") {
+    deals = Array.isArray(input.deals) ? input.deals : [];
+    reports = Array.isArray(input.reports) ? input.reports : currentReports;
+  } else {
+    console.error("writeDeals: invalid input ignored");
+    return;
   }
+
+  if (currentDeals.length > 0 && deals.length === 0) {
+    console.warn(
+      "⚠️ writeDeals blocked — attempted to overwrite non-empty store with empty deals."
+    );
+    return;
+  }
+
+  backupCurrentFile();
 
   fs.writeFileSync(
     ACTIVE_DEALS_FILE,
     JSON.stringify(
       {
         updatedAt: new Date().toISOString(),
-        deals: dealsArray,
+        deals,
+        reports,
       },
       null,
       2
@@ -123,7 +200,7 @@ export function writeDeals(dealsArray) {
 }
 
 /* =====================================================
-   UPSERT (CREATES OR UPDATES)
+   UPSERT
 ===================================================== */
 
 export function upsertDeals(incoming = []) {
@@ -133,7 +210,6 @@ export function upsertDeals(incoming = []) {
 
   const store = readDeals();
   const existing = Array.isArray(store.deals) ? store.deals : [];
-
   const map = new Map();
 
   for (const d of existing) {
@@ -157,7 +233,7 @@ export function upsertDeals(incoming = []) {
       map.set(key, {
         ...current,
         ...raw,
-        id: current.id, // preserve ID
+        id: current.id,
         status: current.status || "approved",
         updatedAt: now,
       });
@@ -179,21 +255,19 @@ export function upsertDeals(incoming = []) {
 
   const merged = Array.from(map.values());
 
-  writeDeals(merged);
+  writeDeals({
+    deals: merged,
+    reports: store.reports || [],
+  });
 
-  return {
-    ok: true,
-    addedCount,
-    updatedCount,
-    total: merged.length,
-  };
+  return { ok: true, addedCount, updatedCount, total: merged.length };
 }
 
 /* =====================================================
-   RESET STORE (ADMIN)
+   RESET (disabled)
 ===================================================== */
 
 export function resetDeals() {
-  writeDeals([]);
-  return { ok: true, total: 0 };
+  console.warn("⚠️ resetDeals called — NOT allowed in production.");
+  return { ok: false, message: "Reset disabled in production." };
 }

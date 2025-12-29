@@ -54,6 +54,17 @@ function matchesDeal(deal, idOrKey) {
 }
 
 /* =====================================================
+   UTILITY — ENSURE REPORTS ARRAY EXISTS
+===================================================== */
+
+function ensureReports(store) {
+  if (!Array.isArray(store.reports)) {
+    store.reports = [];
+  }
+  return store;
+}
+
+/* =====================================================
    CREATE — POST /admin/deals
 ===================================================== */
 
@@ -83,10 +94,9 @@ router.post("/admin/deals", requireAdmin, (req, res) => {
     updatedAt: now,
   };
 
-  // add to TOP
   deals.unshift(deal);
 
-  writeDeals(deals);
+  writeDeals({ ...store, deals });
 
   res.json({ ok: true, deal });
 });
@@ -123,13 +133,13 @@ router.put("/admin/deals/:id", requireAdmin, (req, res) => {
     updatedAt: new Date().toISOString(),
   });
 
-  writeDeals(deals);
+  writeDeals(store);
 
   res.json({ ok: true, deal });
 });
 
 /* =====================================================
-   DELETE — DELETE /admin/deals/:id   (Base44 + REST)
+   DELETE — DELETE /admin/deals/:id
 ===================================================== */
 
 router.delete("/admin/deals/:id", requireAdmin, (req, res) => {
@@ -144,13 +154,13 @@ router.delete("/admin/deals/:id", requireAdmin, (req, res) => {
     return res.status(404).json({ error: "Deal not found" });
   }
 
-  writeDeals(filtered);
+  writeDeals({ ...store, deals: filtered });
 
   res.json({ ok: true, deleted: before - filtered.length });
 });
 
 /* =====================================================
-   DELETE — POST /admin/deals/:id/delete  (Base44 older)
+   DELETE — POST /admin/deals/:id/delete
 ===================================================== */
 
 router.post("/admin/deals/:id/delete", requireAdmin, (req, res) => {
@@ -165,7 +175,7 @@ router.post("/admin/deals/:id/delete", requireAdmin, (req, res) => {
     return res.status(404).json({ error: "Deal not found" });
   }
 
-  writeDeals(filtered);
+  writeDeals({ ...store, deals: filtered });
 
   res.json({ ok: true, deleted: before - filtered.length });
 });
@@ -192,7 +202,7 @@ router.delete("/admin/deals", requireAdmin, (req, res) => {
     return res.status(404).json({ error: "Deal not found" });
   }
 
-  writeDeals(filtered);
+  writeDeals({ ...store, deals: filtered });
 
   res.json({ ok: true, deleted: before - filtered.length });
 });
@@ -203,6 +213,39 @@ router.delete("/admin/deals", requireAdmin, (req, res) => {
 
 router.get("/admin/deals", requireAdmin, (req, res) => {
   res.json(readDeals());
+});
+
+/* =====================================================
+   REPORTS — ADMIN VIEW ALL
+   GET /admin/reports
+===================================================== */
+
+router.get("/admin/reports", requireAdmin, (req, res) => {
+  const store = ensureReports(readDeals());
+  res.json({ reports: store.reports || [] });
+});
+
+/* =====================================================
+   REPORTS — ADMIN RESOLVE
+   POST /admin/reports/:id/resolve
+===================================================== */
+
+router.post("/admin/reports/:id/resolve", requireAdmin, (req, res) => {
+  const reportId = normalize(req.params.id);
+
+  const store = ensureReports(readDeals());
+
+  const report = store.reports.find((r) => r.id === reportId);
+  if (!report) {
+    return res.status(404).json({ error: "Report not found" });
+  }
+
+  report.status = "reviewed";
+  report.reviewedAt = new Date().toISOString();
+
+  writeDeals(store);
+
+  res.json({ ok: true, report });
 });
 
 export default router;
