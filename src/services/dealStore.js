@@ -13,8 +13,22 @@ const BACKUP_FILE = `${ACTIVE_DEALS_FILE}.bak`;
 console.log("💾 Using deals file:", ACTIVE_DEALS_FILE);
 
 /* =====================================================
-   AUTO-MIGRATION (COPY OLD FILE → /data ONCE)
+   AUTO-MIGRATION (COPY OLD FILE → DISK)
+   - If new file is missing OR empty
+   - And old file exists with deals
+   → Copy old → new
 ===================================================== */
+
+function readDealsCount(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return 0;
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed.deals) ? parsed.deals.length : 0;
+  } catch {
+    return 0;
+  }
+}
 
 try {
   // Possible old locations
@@ -26,15 +40,36 @@ try {
   console.log("🔍 Checking migration locations:", OLD_FILES);
 
   const oldFile = OLD_FILES.find(f => fs.existsSync(f));
+  const newExists = fs.existsSync(ACTIVE_DEALS_FILE);
 
-  if (!fs.existsSync(ACTIVE_DEALS_FILE) && oldFile) {
+  const oldCount = oldFile ? readDealsCount(oldFile) : 0;
+  const newCount = newExists ? readDealsCount(ACTIVE_DEALS_FILE) : 0;
+
+  let shouldMigrate = false;
+
+  // Case 1: no new file, but old file has deals
+  if (!newExists && oldFile && oldCount > 0) {
+    shouldMigrate = true;
+  }
+
+  // Case 2: new file exists but is empty, old file has deals
+  if (newExists && newCount === 0 && oldFile && oldCount > 0) {
+    shouldMigrate = true;
+  }
+
+  if (shouldMigrate && oldFile) {
     fs.mkdirSync(path.dirname(ACTIVE_DEALS_FILE), { recursive: true });
     fs.copyFileSync(oldFile, ACTIVE_DEALS_FILE);
-    console.log("✨ Migrated deals.json to /data automatically:", oldFile);
+    console.log(
+      "✨ Migrated deals.json to disk:",
+      { from: oldFile, to: ACTIVE_DEALS_FILE, oldCount, newCount }
+    );
   } else {
-    console.log("⚠️ Migration skipped. Exists?:", {
-      newFileExists: fs.existsSync(ACTIVE_DEALS_FILE),
+    console.log("⚠️ Migration skipped. Status:", {
+      newFileExists: newExists,
+      newCount,
       foundOldFile: oldFile,
+      oldCount,
     });
   }
 } catch (err) {
