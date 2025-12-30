@@ -1,6 +1,7 @@
 import express from "express";
 import crypto from "node:crypto";
 import { readDeals, writeDeals } from "../services/dealStore.js";
+import { classifyDealCategory } from "../services/classifyDealCategory.js";
 
 const router = express.Router();
 
@@ -185,10 +186,10 @@ router.post("/deals/:id/report", (req, res) => {
 
 /* =========================
    CREATE DEAL (ADMIN)
-   (NOW WITH clicks: 0)
+   (auto category + clicks: 0)
 ========================= */
 
-router.post("/admin/deals", (req, res) => {
+router.post("/admin/deals", async (req, res) => {
   if (!requireAdmin(req, res)) return;
 
   const body = req.body || {};
@@ -201,13 +202,25 @@ router.post("/admin/deals", (req, res) => {
   const store = readDeals();
   const now = new Date().toISOString();
 
+  // auto category
+  let category = "Other";
+
+  try {
+    category = await classifyDealCategory({
+      title: body.title,
+      description: body.notes || body.description || ""
+    });
+  } catch {
+    category = "Other";
+  }
+
   const deal = {
     id: crypto.randomUUID(),
     title: String(body.title),
     price: body.price,
     originalPrice: body.originalPrice || null,
     retailer: body.retailer || "Amazon",
-    category: body.category || "General",
+    category,
     imageUrl: body.imageUrl || null,
     notes: body.notes || null,
     url: normalizeAmazonUrl(body.url),
