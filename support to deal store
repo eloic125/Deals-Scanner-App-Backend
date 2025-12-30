@@ -1,0 +1,109 @@
+[1mdiff --git a/src/services/dealStore.js b/src/services/dealStore.js[m
+[1mindex 9cef8b5..506e7ea 100644[m
+[1m--- a/src/services/dealStore.js[m
+[1m+++ b/src/services/dealStore.js[m
+[36m@@ -27,6 +27,7 @@[m [mfunction ensureStore() {[m
+         {[m
+           updatedAt: new Date().toISOString(),[m
+           deals: [],[m
+[32m+[m[32m          reports: [],[m
+         },[m
+         null,[m
+         2[m
+[36m@@ -91,22 +92,39 @@[m [mexport function readDeals() {[m
+     return {[m
+       updatedAt: parsed.updatedAt || new Date().toISOString(),[m
+       deals: Array.isArray(parsed.deals) ? parsed.deals : [],[m
+[32m+[m[32m      reports: Array.isArray(parsed.reports) ? parsed.reports : [],[m
+     };[m
+   } catch (err) {[m
+     console.error("readDeals failed:", err);[m
+[31m-    return { updatedAt: new Date().toISOString(), deals: [] };[m
+[32m+[m
+[32m+[m[32m    return {[m
+[32m+[m[32m      updatedAt: new Date().toISOString(),[m
+[32m+[m[32m      deals: [],[m
+[32m+[m[32m      reports: [],[m
+[32m+[m[32m    };[m
+   }[m
+ }[m
+ [m
+ /* =====================================================[m
+    WRITE[m
+[32m+[m[32m   Supports:[m
+[32m+[m[32m   - writeDeals(array)[m
+[32m+[m[32m   - writeDeals({ deals, reports })[m
+ ===================================================== */[m
+ [m
+[31m-export function writeDeals(dealsArray) {[m
+[32m+[m[32mexport function writeDeals(input) {[m
+   ensureStore();[m
+ [m
+[31m-  if (!Array.isArray(dealsArray)) {[m
+[31m-    throw new Error("writeDeals expects an array");[m
+[32m+[m[32m  let deals = [];[m
+[32m+[m[32m  let reports = [];[m
+[32m+[m
+[32m+[m[32m  if (Array.isArray(input)) {[m
+[32m+[m[32m    deals = input;[m
+[32m+[m[32m  } else if (input && typeof input === "object") {[m
+[32m+[m[32m    deals = Array.isArray(input.deals) ? input.deals : [];[m
+[32m+[m[32m    reports = Array.isArray(input.reports) ? input.reports : [];[m
+[32m+[m[32m  } else {[m
+[32m+[m[32m    throw new Error("writeDeals expects an array or { deals, reports } object");[m
+   }[m
+ [m
+   fs.writeFileSync([m
+[36m@@ -114,7 +132,8 @@[m [mexport function writeDeals(dealsArray) {[m
+     JSON.stringify([m
+       {[m
+         updatedAt: new Date().toISOString(),[m
+[31m-        deals: dealsArray,[m
+[32m+[m[32m        deals,[m
+[32m+[m[32m        reports,[m
+       },[m
+       null,[m
+       2[m
+[36m@@ -123,7 +142,7 @@[m [mexport function writeDeals(dealsArray) {[m
+ }[m
+ [m
+ /* =====================================================[m
+[31m-   UPSERT (CREATES OR UPDATES)[m
+[32m+[m[32m   UPSERT (CREATE OR UPDATE)[m
+ ===================================================== */[m
+ [m
+ export function upsertDeals(incoming = []) {[m
+[36m@@ -157,7 +176,7 @@[m [mexport function upsertDeals(incoming = []) {[m
+       map.set(key, {[m
+         ...current,[m
+         ...raw,[m
+[31m-        id: current.id, // preserve ID[m
+[32m+[m[32m        id: current.id,[m
+         status: current.status || "approved",[m
+         updatedAt: now,[m
+       });[m
+[36m@@ -179,7 +198,10 @@[m [mexport function upsertDeals(incoming = []) {[m
+ [m
+   const merged = Array.from(map.values());[m
+ [m
+[31m-  writeDeals(merged);[m
+[32m+[m[32m  writeDeals({[m
+[32m+[m[32m    deals: merged,[m
+[32m+[m[32m    reports: store.reports || [],[m
+[32m+[m[32m  });[m
+ [m
+   return {[m
+     ok: true,[m
+[36m@@ -190,10 +212,10 @@[m [mexport function upsertDeals(incoming = []) {[m
+ }[m
+ [m
+ /* =====================================================[m
+[31m-   RESET STORE (ADMIN)[m
+[32m+[m[32m   RESET STORE[m
+ ===================================================== */[m
+ [m
+ export function resetDeals() {[m
+[31m-  writeDeals([]);[m
+[32m+[m[32m  writeDeals({ deals: [], reports: [] });[m
+   return { ok: true, total: 0 };[m
+ }[m
