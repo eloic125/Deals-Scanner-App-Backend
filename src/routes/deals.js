@@ -74,7 +74,7 @@ function ensureReports(store) {
 
 /* =========================
    PUBLIC — GET DEALS
-   (FILTERS + SORTING ADDED)
+   (FILTERS + SORTING)
 ========================= */
 
 router.get("/deals", (req, res) => {
@@ -92,8 +92,8 @@ router.get("/deals", (req, res) => {
     return true;
   });
 
-  // CATEGORY FILTER
-  if (category) {
+  // CATEGORY FILTER — ignore empty + "All"
+  if (category && category !== "All") {
     deals = deals.filter(
       d =>
         String(d.category || "").toLowerCase() ===
