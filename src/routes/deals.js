@@ -113,7 +113,7 @@ router.get("/deals", (req, res) => {
     );
   }
 
-  // SORT: TRENDING
+  // SORT: TRENDING (MOST CLICKS FIRST)
   if (sort === "trending") {
     deals = deals.sort(
       (a, b) => (b.clicks || 0) - (a.clicks || 0)
@@ -185,6 +185,7 @@ router.post("/deals/:id/report", (req, res) => {
 
 /* =========================
    CREATE DEAL (ADMIN)
+   (NOW WITH clicks: 0)
 ========================= */
 
 router.post("/admin/deals", (req, res) => {
@@ -213,7 +214,8 @@ router.post("/admin/deals", (req, res) => {
     status: "approved",
     createdAt: now,
     updatedAt: now,
-    expiresAt: null
+    expiresAt: null,
+    clicks: 0
   };
 
   store.deals.unshift(deal);
