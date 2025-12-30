@@ -74,24 +74,56 @@ function ensureReports(store) {
 
 /* =========================
    PUBLIC — GET DEALS
+   (FILTERS + SORTING ADDED)
 ========================= */
 
 router.get("/deals", (req, res) => {
+  const { category, sort, maxPrice } = req.query;
+
   const store = readDeals();
-  const deals = Array.isArray(store.deals) ? store.deals : [];
+  let deals = Array.isArray(store.deals) ? store.deals : [];
 
   const now = Date.now();
 
-  const visible = deals.filter(d => {
+  // visible deals only
+  deals = deals.filter(d => {
     if (d.status !== "approved") return false;
     if (d.expiresAt && new Date(d.expiresAt).getTime() <= now) return false;
     return true;
   });
 
+  // CATEGORY FILTER
+  if (category) {
+    deals = deals.filter(
+      d =>
+        String(d.category || "").toLowerCase() ===
+        String(category).toLowerCase()
+    );
+  }
+
+  // PRICE FILTER
+  if (maxPrice) {
+    deals = deals.filter(d => Number(d.price) <= Number(maxPrice));
+  }
+
+  // SORT: NEWEST
+  if (sort === "newest") {
+    deals = deals.sort(
+      (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
+    );
+  }
+
+  // SORT: TRENDING
+  if (sort === "trending") {
+    deals = deals.sort(
+      (a, b) => (b.clicks || 0) - (a.clicks || 0)
+    );
+  }
+
   res.json({
     updatedAt: store.updatedAt || new Date().toISOString(),
-    count: visible.length,
-    deals: visible
+    count: deals.length,
+    deals
   });
 });
 
