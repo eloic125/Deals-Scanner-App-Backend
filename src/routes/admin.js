@@ -1,5 +1,4 @@
 import express from "express";
-import fs from "fs";
 import crypto from "node:crypto";
 
 import {
@@ -12,33 +11,27 @@ import {
 const router = express.Router();
 
 /* =====================================================
-   ADMIN AUTH
+   ADMIN AUTH – uses authenticated Base44 user
 ===================================================== */
 
-function readSecretFile(filename) {
-  try {
-    const p = `/etc/secrets/${filename}`;
-    if (!fs.existsSync(p)) return "";
-    return String(fs.readFileSync(p, "utf8") || "").trim();
-  } catch {
-    return "";
-  }
-}
-
-const ADMIN_KEY =
-  (process.env.ADMIN_KEY && process.env.ADMIN_KEY.trim()) ||
-  readSecretFile("ADMIN_KEY");
-
-if (!ADMIN_KEY) {
-  throw new Error("ADMIN_KEY is missing");
-}
-
 function requireAdmin(req, res, next) {
-  const key = String(req.headers["x-admin-key"] || "").trim();
-  if (!key || key !== ADMIN_KEY) {
-    return res.status(403).json({ error: "Forbidden" });
+  try {
+    // Base44 should already populate req.user
+    const user = req.user;
+
+    if (!user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+
+    if (user.role !== "admin") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    next();
+  } catch (err) {
+    console.error("Admin check failed:", err);
+    res.status(500).json({ error: "Admin check failed" });
   }
-  next();
 }
 
 function normalize(v) {
@@ -70,7 +63,6 @@ function ensureReports(store) {
 
 router.post("/admin/deals", requireAdmin, (req, res) => {
   const body = req.body || {};
-
   const store = readDeals();
   const deals = Array.isArray(store.deals) ? store.deals : [];
 
@@ -80,9 +72,7 @@ router.post("/admin/deals", requireAdmin, (req, res) => {
     id: body.id || crypto.randomUUID(),
     title: body.title || "Untitled",
     price: body.price ? Number(body.price) : 0,
-    originalPrice: body.originalPrice
-      ? Number(body.originalPrice)
-      : null,
+    originalPrice: body.originalPrice ? Number(body.originalPrice) : null,
     retailer: body.retailer || "Unknown",
     category: body.category || "Other",
     imageUrl: body.imageUrl || "",
@@ -95,7 +85,6 @@ router.post("/admin/deals", requireAdmin, (req, res) => {
   };
 
   deals.unshift(deal);
-
   writeDeals({ ...store, deals });
 
   res.json({ ok: true, deal });
@@ -122,7 +111,6 @@ router.post("/admin/deals/bulk", requireAdmin, (req, res) => {
 
 router.put("/admin/deals/:id", requireAdmin, (req, res) => {
   const id = normalize(req.params.id);
-
   const store = readDeals();
   const deals = store.deals;
 
@@ -134,7 +122,6 @@ router.put("/admin/deals/:id", requireAdmin, (req, res) => {
   });
 
   writeDeals(store);
-
   res.json({ ok: true, deal });
 });
 
@@ -144,7 +131,6 @@ router.put("/admin/deals/:id", requireAdmin, (req, res) => {
 
 router.delete("/admin/deals/:id", requireAdmin, (req, res) => {
   const id = normalize(req.params.id);
-
   const store = readDeals();
   const before = store.deals.length;
 
@@ -155,7 +141,6 @@ router.delete("/admin/deals/:id", requireAdmin, (req, res) => {
   }
 
   writeDeals({ ...store, deals: filtered });
-
   res.json({ ok: true, deleted: before - filtered.length });
 });
 
@@ -165,7 +150,6 @@ router.delete("/admin/deals/:id", requireAdmin, (req, res) => {
 
 router.post("/admin/deals/:id/delete", requireAdmin, (req, res) => {
   const id = normalize(req.params.id);
-
   const store = readDeals();
   const before = store.deals.length;
 
@@ -176,7 +160,6 @@ router.post("/admin/deals/:id/delete", requireAdmin, (req, res) => {
   }
 
   writeDeals({ ...store, deals: filtered });
-
   res.json({ ok: true, deleted: before - filtered.length });
 });
 
@@ -188,9 +171,7 @@ router.delete("/admin/deals", requireAdmin, (req, res) => {
   const key = normalize(req.query.sourceKey || req.query.id);
 
   if (!key) {
-    return res
-      .status(400)
-      .json({ error: "id or sourceKey required" });
+    return res.status(400).json({ error: "id or sourceKey required" });
   }
 
   const store = readDeals();
@@ -203,7 +184,6 @@ router.delete("/admin/deals", requireAdmin, (req, res) => {
   }
 
   writeDeals({ ...store, deals: filtered });
-
   res.json({ ok: true, deleted: before - filtered.length });
 });
 
@@ -217,7 +197,6 @@ router.get("/admin/deals", requireAdmin, (req, res) => {
 
 /* =====================================================
    REPORTS — ADMIN VIEW ALL
-   GET /admin/reports
 ===================================================== */
 
 router.get("/admin/reports", requireAdmin, (req, res) => {
@@ -227,12 +206,10 @@ router.get("/admin/reports", requireAdmin, (req, res) => {
 
 /* =====================================================
    REPORTS — ADMIN RESOLVE
-   POST /admin/reports/:id/resolve
 ===================================================== */
 
 router.post("/admin/reports/:id/resolve", requireAdmin, (req, res) => {
   const reportId = normalize(req.params.id);
-
   const store = ensureReports(readDeals());
 
   const report = store.reports.find((r) => r.id === reportId);
@@ -244,7 +221,6 @@ router.post("/admin/reports/:id/resolve", requireAdmin, (req, res) => {
   report.reviewedAt = new Date().toISOString();
 
   writeDeals(store);
-
   res.json({ ok: true, report });
 });
 
