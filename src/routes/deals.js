@@ -64,17 +64,13 @@ function normalizeAmazonUrl(inputUrl) {
   }
 }
 
-/* =========================
-   REPORTS STORE ENSURE
-========================= */
-
 function ensureReports(store) {
   if (!Array.isArray(store.reports)) store.reports = [];
   return store;
 }
 
 /* =========================
-   PUBLIC — GET APPROVED DEALS
+   PUBLIC — GET APPROVED
 ========================= */
 
 router.get("/deals", (req, res) => {
@@ -125,12 +121,8 @@ router.get("/deals", (req, res) => {
 ========================= */
 
 router.get("/deals/:id", (req, res) => {
-  const { id } = req.params;
-
   const store = readDeals();
-  const deals = Array.isArray(store.deals) ? store.deals : [];
-
-  const deal = deals.find(d => d.id === id);
+  const deal = (store.deals || []).find(d => d.id === req.params.id);
 
   if (!deal)
     return res.json({
@@ -143,7 +135,7 @@ router.get("/deals/:id", (req, res) => {
 
 /* =========================
    USERS — SUBMIT DEAL
-   (PENDING unless Admin)
+   ALWAYS PENDING (unless admin)
 ========================= */
 
 router.post("/deals", async (req, res) => {
@@ -174,8 +166,8 @@ router.post("/deals", async (req, res) => {
   const deal = {
     id: crypto.randomUUID(),
     title: String(body.title),
-    price: body.price,
-    originalPrice: body.originalPrice || null,
+    price: Number(body.price),
+    originalPrice: body.originalPrice ? Number(body.originalPrice) : null,
     retailer: body.retailer || "Amazon",
     category,
     imageUrl: body.imageUrl || null,
@@ -206,12 +198,9 @@ router.post("/deals/:id/report", (req, res) => {
   const { id } = req.params;
   const body = req.body || {};
   const store = ensureReports(readDeals());
-  const deals = store.deals || [];
 
-  const deal = deals.find(d => d.id === id);
-
-  if (!deal)
-    return res.status(404).json({ error: "Deal not found" });
+  const deal = (store.deals || []).find(d => d.id === id);
+  if (!deal) return res.status(404).json({ error: "Deal not found" });
 
   if (!body.reason)
     return res.status(400).json({ error: "reason is required" });
@@ -261,8 +250,8 @@ router.post("/admin/deals", async (req, res) => {
   const deal = {
     id: crypto.randomUUID(),
     title: String(body.title),
-    price: body.price,
-    originalPrice: body.originalPrice || null,
+    price: Number(body.price),
+    originalPrice: body.originalPrice ? Number(body.originalPrice) : null,
     retailer: body.retailer || "Amazon",
     category,
     imageUrl: body.imageUrl || null,
@@ -282,7 +271,7 @@ router.post("/admin/deals", async (req, res) => {
 });
 
 /* =========================
-   ADMIN — LIST PENDING DEALS
+   ADMIN — LIST PENDING
 ========================= */
 
 router.get("/admin/deals/pending", (req, res) => {
