@@ -65,7 +65,7 @@ function normalizeAmazonUrl(inputUrl) {
 }
 
 /* =========================
-   ENSURE REPORT STORE
+   REPORTS STORE ENSURE
 ========================= */
 
 function ensureReports(store) {
@@ -74,8 +74,7 @@ function ensureReports(store) {
 }
 
 /* =========================
-   PUBLIC — GET DEALS
-   (FILTERS + SORTING)
+   PUBLIC — GET APPROVED DEALS
 ========================= */
 
 router.get("/deals", (req, res) => {
@@ -86,14 +85,12 @@ router.get("/deals", (req, res) => {
 
   const now = Date.now();
 
-  // visible deals only
   deals = deals.filter(d => {
     if (d.status !== "approved") return false;
     if (d.expiresAt && new Date(d.expiresAt).getTime() <= now) return false;
     return true;
   });
 
-  // CATEGORY FILTER — ignore empty + "All"
   if (category && category !== "All") {
     deals = deals.filter(
       d =>
@@ -102,23 +99,18 @@ router.get("/deals", (req, res) => {
     );
   }
 
-  // PRICE FILTER
   if (maxPrice) {
     deals = deals.filter(d => Number(d.price) <= Number(maxPrice));
   }
 
-  // SORT: NEWEST
   if (sort === "newest") {
     deals = deals.sort(
       (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
     );
   }
 
-  // SORT: TRENDING (MOST CLICKS FIRST)
   if (sort === "trending") {
-    deals = deals.sort(
-      (a, b) => (b.clicks || 0) - (a.clicks || 0)
-    );
+    deals = deals.sort((a, b) => (b.clicks || 0) - (a.clicks || 0));
   }
 
   res.json({
@@ -129,7 +121,7 @@ router.get("/deals", (req, res) => {
 });
 
 /* =========================
-   FRONTEND DEAL DETAILS SAFE
+   PUBLIC — DEAL DETAILS
 ========================= */
 
 router.get("/deals/:id", (req, res) => {
@@ -147,6 +139,63 @@ router.get("/deals/:id", (req, res) => {
     });
 
   res.json(deal);
+});
+
+/* =========================
+   USERS — SUBMIT DEAL
+   (PENDING unless Admin)
+========================= */
+
+router.post("/deals", async (req, res) => {
+  const body = req.body || {};
+  const store = readDeals();
+  const now = new Date().toISOString();
+
+  if (!body.title || typeof body.price !== "number") {
+    return res.status(400).json({
+      error: "title and price are required"
+    });
+  }
+
+  let category = "Other";
+
+  try {
+    category = await classifyDealCategory({
+      title: body.title,
+      description: body.notes || body.description || ""
+    });
+  } catch {
+    category = "Other";
+  }
+
+  const isAdmin =
+    String(req.headers["x-admin-key"] || "").trim() === ADMIN_KEY;
+
+  const deal = {
+    id: crypto.randomUUID(),
+    title: String(body.title),
+    price: body.price,
+    originalPrice: body.originalPrice || null,
+    retailer: body.retailer || "Amazon",
+    category,
+    imageUrl: body.imageUrl || null,
+    notes: body.notes || null,
+    url: normalizeAmazonUrl(body.url),
+    status: isAdmin ? "approved" : "pending",
+    createdAt: now,
+    updatedAt: now,
+    expiresAt: null,
+    clicks: 0
+  };
+
+  store.deals.unshift(deal);
+  writeDeals(store);
+
+  res.status(201).json({
+    ok: true,
+    pending: !isAdmin,
+    deal
+  });
 });
 
 /* =========================
@@ -185,30 +234,25 @@ router.post("/deals/:id/report", (req, res) => {
 });
 
 /* =========================
-   CREATE DEAL (ADMIN)
-   (auto category + clicks: 0)
+   ADMIN — CREATE DEAL
 ========================= */
 
 router.post("/admin/deals", async (req, res) => {
   if (!requireAdmin(req, res)) return;
 
   const body = req.body || {};
-
-  if (!body.title || typeof body.price !== "number")
-    return res.status(400).json({
-      error: "title and price required"
-    });
-
   const store = readDeals();
   const now = new Date().toISOString();
 
-  // auto category
+  if (!body.title || typeof body.price !== "number")
+    return res.status(400).json({ error: "title and price required" });
+
   let category = "Other";
 
   try {
     category = await classifyDealCategory({
       title: body.title,
-      description: body.notes || body.description || ""
+      description: body.notes || ""
     });
   } catch {
     category = "Other";
@@ -238,7 +282,60 @@ router.post("/admin/deals", async (req, res) => {
 });
 
 /* =========================
-   UPDATE DEAL (ADMIN)
+   ADMIN — LIST PENDING DEALS
+========================= */
+
+router.get("/admin/deals/pending", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const store = readDeals();
+  const deals = (store.deals || []).filter(d => d.status === "pending");
+
+  res.json({ ok: true, deals });
+});
+
+/* =========================
+   ADMIN — APPROVE DEAL
+========================= */
+
+router.post("/admin/deals/:id/approve", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const { id } = req.params;
+  const store = readDeals();
+
+  const deal = store.deals.find(d => d.id === id);
+  if (!deal) return res.status(404).json({ error: "Deal not found" });
+
+  deal.status = "approved";
+  deal.updatedAt = new Date().toISOString();
+
+  writeDeals(store);
+  res.json({ ok: true, deal });
+});
+
+/* =========================
+   ADMIN — REJECT DEAL
+========================= */
+
+router.post("/admin/deals/:id/reject", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const { id } = req.params;
+  const store = readDeals();
+
+  const deal = store.deals.find(d => d.id === id);
+  if (!deal) return res.status(404).json({ error: "Deal not found" });
+
+  deal.status = "rejected";
+  deal.updatedAt = new Date().toISOString();
+
+  writeDeals(store);
+  res.json({ ok: true, deal });
+});
+
+/* =========================
+   ADMIN — EDIT DEAL
 ========================= */
 
 router.put("/admin/deals/:id", (req, res) => {
@@ -266,7 +363,7 @@ router.put("/admin/deals/:id", (req, res) => {
 });
 
 /* =========================
-   DISABLE DEAL (ADMIN)
+   ADMIN — DISABLE DEAL
 ========================= */
 
 router.delete("/admin/deals/:id", (req, res) => {
