@@ -224,4 +224,41 @@ router.post("/admin/reports/:id/resolve", requireAdmin, (req, res) => {
   res.json({ ok: true, report });
 });
 
+/* =====================================================
+   REPORT DEAL — PUBLIC (POST /reports)
+===================================================== */
+
+router.post("/reports", (req, res) => {
+  const body = req.body || {};
+  const deal_id = String(body.deal_id || "").trim();
+  const reason = String(body.reason || "").trim();
+  const notes = body.notes || null;
+
+  if (!deal_id || !reason) {
+    return res
+      .status(400)
+      .json({ error: "Deal ID and reason are required" });
+  }
+
+  const store = ensureReports(readDeals());
+  const deals = Array.isArray(store.deals) ? store.deals : [];
+
+  const deal = deals.find((d) => matchesDeal(d, deal_id));
+
+  const report = {
+    id: crypto.randomUUID(),
+    deal_id,
+    reason,
+    notes,
+    status: "pending",
+    createdAt: new Date().toISOString(),
+    dealTitle: deal?.title || null,
+  };
+
+  store.reports.unshift(report);
+  writeDeals(store);
+
+  res.json({ ok: true, report });
+});
+
 export default router;
