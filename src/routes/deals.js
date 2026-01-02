@@ -135,7 +135,6 @@ router.get("/deals/:id", (req, res) => {
 
 /* =========================
    USERS — SUBMIT DEAL
-   ALWAYS PENDING (unless admin)
 ========================= */
 
 router.post("/deals", async (req, res) => {
@@ -191,7 +190,7 @@ router.post("/deals", async (req, res) => {
 });
 
 /* =========================
-   USER REPORT DEAL
+   USER REPORT DEAL (OLD)
 ========================= */
 
 router.post("/deals/:id/report", (req, res) => {
@@ -220,6 +219,52 @@ router.post("/deals/:id/report", (req, res) => {
   writeDeals(store);
 
   res.json({ ok: true, report });
+});
+
+/* =========================
+   USER REPORT DEAL (NEW — Base44)
+========================= */
+
+router.post("/reportDeal", (req, res) => {
+  try {
+    const store = ensureReports(readDeals());
+
+    const dealId =
+      req.body?.dealId ||
+      req.body?.deal_id ||
+      "";
+
+    const reason = (req.body?.reason || "").trim();
+    const notes = (req.body?.notes || "").trim() || null;
+
+    if (!dealId || !reason) {
+      return res
+        .status(400)
+        .json({ error: "Deal ID and reason are required" });
+    }
+
+    const deal = (store.deals || []).find(d => d.id === dealId);
+    if (!deal) return res.status(404).json({ error: "Deal not found" });
+
+    const report = {
+      id: crypto.randomUUID(),
+      dealId,
+      reason,
+      notes,
+      status: "pending",
+      user_seen: false,
+      createdAt: new Date().toISOString()
+    };
+
+    store.reports.unshift(report);
+
+    writeDeals(store);
+
+    res.json({ ok: true, report });
+  } catch (err) {
+    console.error("reportDeal failed:", err);
+    res.status(500).json({ error: "Failed to submit report" });
+  }
 });
 
 /* =========================
