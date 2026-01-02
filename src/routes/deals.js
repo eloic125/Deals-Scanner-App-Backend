@@ -26,7 +26,7 @@ function requireAdmin(req, res) {
 }
 
 /* =========================
-   AMAZON URL NORMALIZER
+   HELPERS
 ========================= */
 
 function normalizeAmazonUrl(inputUrl) {
@@ -70,7 +70,7 @@ function ensureReports(store) {
 }
 
 /* =========================
-   PUBLIC — GET APPROVED
+   PUBLIC — LIST DEALS
 ========================= */
 
 router.get("/deals", (req, res) => {
@@ -134,7 +134,7 @@ router.get("/deals/:id", (req, res) => {
 });
 
 /* =========================
-   USERS — SUBMIT DEAL
+   USER — SUBMIT DEAL
 ========================= */
 
 router.post("/deals", async (req, res) => {
@@ -190,7 +190,7 @@ router.post("/deals", async (req, res) => {
 });
 
 /* =========================
-   USER REPORT DEAL (OLD)
+   USER — REPORT DEAL (OLD)
 ========================= */
 
 router.post("/deals/:id/report", (req, res) => {
@@ -209,7 +209,7 @@ router.post("/deals/:id/report", (req, res) => {
     dealId: id,
     reason: String(body.reason),
     notes: body.notes ? String(body.notes) : null,
-    userId: body.userId || null,
+    userId: req.user?.id || body.userId || null,
     status: "pending",
     user_seen: false,
     createdAt: new Date().toISOString()
@@ -222,7 +222,7 @@ router.post("/deals/:id/report", (req, res) => {
 });
 
 /* =========================
-   USER REPORT DEAL (NEW — Base44)
+   USER — REPORT DEAL (Base44 /reportDeal)
 ========================= */
 
 router.post("/reportDeal", (req, res) => {
@@ -251,6 +251,7 @@ router.post("/reportDeal", (req, res) => {
       dealId,
       reason,
       notes,
+      userId: req.user?.id || null,
       status: "pending",
       user_seen: false,
       createdAt: new Date().toISOString()
@@ -268,7 +269,7 @@ router.post("/reportDeal", (req, res) => {
 });
 
 /* =========================
-   ADMIN — CREATE DEAL
+   ADMIN — CREATE / MANAGE DEALS
 ========================= */
 
 router.post("/admin/deals", async (req, res) => {
@@ -315,10 +316,6 @@ router.post("/admin/deals", async (req, res) => {
   res.status(201).json({ ok: true, deal });
 });
 
-/* =========================
-   ADMIN — LIST PENDING
-========================= */
-
 router.get("/admin/deals/pending", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
@@ -327,10 +324,6 @@ router.get("/admin/deals/pending", (req, res) => {
 
   res.json({ ok: true, deals });
 });
-
-/* =========================
-   ADMIN — APPROVE DEAL
-========================= */
 
 router.post("/admin/deals/:id/approve", (req, res) => {
   if (!requireAdmin(req, res)) return;
@@ -348,10 +341,6 @@ router.post("/admin/deals/:id/approve", (req, res) => {
   res.json({ ok: true, deal });
 });
 
-/* =========================
-   ADMIN — REJECT DEAL
-========================= */
-
 router.post("/admin/deals/:id/reject", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
@@ -367,10 +356,6 @@ router.post("/admin/deals/:id/reject", (req, res) => {
   writeDeals(store);
   res.json({ ok: true, deal });
 });
-
-/* =========================
-   ADMIN — EDIT DEAL
-========================= */
 
 router.put("/admin/deals/:id", (req, res) => {
   if (!requireAdmin(req, res)) return;
@@ -395,10 +380,6 @@ router.put("/admin/deals/:id", (req, res) => {
   writeDeals(store);
   res.json({ ok: true, deal: next });
 });
-
-/* =========================
-   ADMIN — DISABLE DEAL
-========================= */
 
 router.delete("/admin/deals/:id", (req, res) => {
   if (!requireAdmin(req, res)) return;
