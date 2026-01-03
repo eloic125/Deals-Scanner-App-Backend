@@ -7,6 +7,7 @@ import healthRoutes from "./routes/health.js";
 import dealsRoutes from "./routes/deals.js";
 import redirectRoutes from "./routes/redirect.js";
 import adminRoutes from "./routes/admin.js";
+import alertsRoutes from "./routes/alerts.js";
 
 const app = express();
 
@@ -83,6 +84,7 @@ app.use("/", healthRoutes);
 app.use("/", dealsRoutes);
 app.use("/", redirectRoutes);
 app.use("/", adminRoutes);
+app.use("/", alertsRoutes);
 
 /* =========================
    ROUTES — /api
@@ -91,6 +93,7 @@ app.use("/api", healthRoutes);
 app.use("/api", dealsRoutes);
 app.use("/api", redirectRoutes);
 app.use("/api", adminRoutes);
+app.use("/api", alertsRoutes);
 
 /* =========================
    ROUTES — /api/v1
@@ -99,6 +102,7 @@ app.use("/api/v1", healthRoutes);
 app.use("/api/v1", dealsRoutes);
 app.use("/api/v1", redirectRoutes);
 app.use("/api/v1", adminRoutes);
+app.use("/api/v1", alertsRoutes);
 
 /* =========================
    CORS ERROR HANDLER
