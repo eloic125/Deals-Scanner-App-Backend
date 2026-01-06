@@ -69,7 +69,6 @@ function ensureReports(store) {
   return store;
 }
 
-// NEW: ensure alerts array exists in the same JSON store
 function ensureAlerts(store) {
   if (!Array.isArray(store.alerts)) {
     store.alerts = [];
@@ -82,19 +81,21 @@ function ensureAlerts(store) {
 ========================= */
 
 router.get("/deals", (req, res) => {
-  const { category, sort, maxPrice } = req.query;
+  const { category, sort, maxPrice, discount } = req.query;
 
   const store = readDeals();
   let deals = Array.isArray(store.deals) ? store.deals : [];
 
   const now = Date.now();
 
+  // only valid + live deals
   deals = deals.filter((d) => {
     if (d.status !== "approved") return false;
     if (d.expiresAt && new Date(d.expiresAt).getTime() <= now) return false;
     return true;
   });
 
+  // CATEGORY
   if (category && category !== "All") {
     deals = deals.filter(
       (d) =>
@@ -103,16 +104,34 @@ router.get("/deals", (req, res) => {
     );
   }
 
+  // MAX PRICE
   if (maxPrice) {
     deals = deals.filter((d) => Number(d.price) <= Number(maxPrice));
   }
 
+  // DISCOUNT FILTER (ex: /deals?discount=50)
+  if (discount) {
+    const min = Number(discount);
+
+    deals = deals.filter((d) => {
+      const p = Number(d.price);
+      const op = Number(d.originalPrice);
+
+      if (!op || !p || op <= 0) return false;
+
+      const percent = Math.round(((op - p) / op) * 100);
+      return percent >= min;
+    });
+  }
+
+  // SORT: NEWEST
   if (sort === "newest") {
     deals = deals.sort(
       (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
     );
   }
 
+  // SORT: TRENDING (by clicks)
   if (sort === "trending") {
     deals = deals.sort((a, b) => (b.clicks || 0) - (a.clicks || 0));
   }
@@ -274,7 +293,7 @@ router.post("/reportDeal", (req, res) => {
 });
 
 /* =========================
-   ADMIN — CREATE / MANAGE DEALS
+   ADMIN — CREATE / MANAGE
 ========================= */
 
 router.post("/admin/deals", async (req, res) => {
@@ -368,7 +387,6 @@ router.put("/admin/deals/:id", (req, res) => {
   const { id } = req.params;
   const updates = req.body || {};
 
-  // Ensure alerts array exists before we load the store
   const store = ensureAlerts(readDeals());
 
   const idx = store.deals.findIndex((d) => d.id === id);
@@ -385,27 +403,24 @@ router.put("/admin/deals/:id", (req, res) => {
 
   if (updates.url) next.url = normalizeAmazonUrl(updates.url);
 
-  // Detect price change
   const newPrice = Number(next.price);
   const priceChanged =
     Number.isFinite(oldPrice) &&
     Number.isFinite(newPrice) &&
     newPrice !== oldPrice;
 
-  // One-time alerts: trigger when new price <= targetPrice
   let triggeredAlerts = [];
   if (priceChanged && Array.isArray(store.alerts) && store.alerts.length > 0) {
     const now = new Date().toISOString();
     triggeredAlerts = store.alerts.filter(
       (alert) =>
         alert &&
-        !alert.triggeredAt && // only one-time
+        !alert.triggeredAt &&
         alert.dealId === id &&
         typeof alert.targetPrice === "number" &&
         newPrice <= alert.targetPrice
     );
 
-    // Mark triggered alerts as used (one-time)
     if (triggeredAlerts.length > 0) {
       store.alerts = store.alerts.map((alert) => {
         if (
@@ -424,7 +439,6 @@ router.put("/admin/deals/:id", (req, res) => {
         return alert;
       });
 
-      // Stub for notification system (email / push can hook here later)
       console.log(
         `Price alerts triggered for deal ${id}:`,
         triggeredAlerts.map((a) => ({
