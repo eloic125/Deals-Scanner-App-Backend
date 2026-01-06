@@ -11,20 +11,35 @@ import {
 const router = express.Router();
 
 /* =====================================================
-   ADMIN AUTH – uses authenticated Base44 user
+   ADMIN AUTH
+   Supports BOTH:
+   1) Logged-in Base44 admin (req.user.role === admin)
+   2) x-admin-key header (server/admin scripts)
 ===================================================== */
+
+const ADMIN_KEY =
+  (process.env.ADMIN_KEY && process.env.ADMIN_KEY.trim()) || "";
 
 function requireAdmin(req, res, next) {
   try {
-    // Base44 should already populate req.user
-    const user = req.user;
-
-    if (!user) {
-      return res.status(401).json({ error: "Not authenticated" });
+    // 1) Prefer authenticated Base44 user
+    if (req.user) {
+      if (req.user.role === "admin") {
+        return next();
+      }
+      return res.status(403).json({ error: "Forbidden" });
     }
 
-    if (user.role !== "admin") {
-      return res.status(403).json({ error: "Forbidden" });
+    // 2) Fallback — x-admin-key (ingest, tools, scripts)
+    const headerKey = String(req.headers["x-admin-key"] || "").trim();
+
+    if (!ADMIN_KEY) {
+      console.error("ADMIN_KEY missing in backend environment");
+      return res.status(500).json({ error: "Server misconfiguration" });
+    }
+
+    if (!headerKey || headerKey !== ADMIN_KEY) {
+      return res.status(401).json({ error: "Not authenticated" });
     }
 
     next();
@@ -225,7 +240,7 @@ router.post("/admin/reports/:id/resolve", requireAdmin, (req, res) => {
 });
 
 /* =====================================================
-   REPORT DEAL — PUBLIC (POST /reports)
+   PUBLIC REPORT DEAL — POST /reports
 ===================================================== */
 
 router.post("/reports", (req, res) => {
