@@ -204,6 +204,9 @@ router.post("/deals", async (req, res) => {
     updatedAt: now,
     expiresAt: null,
     clicks: 0,
+
+    // ✅ NEW: persist the submitting user so we can award points later on approval
+    createdByUserId: req.user?.id || null,
   };
 
   store.deals.unshift(deal);
