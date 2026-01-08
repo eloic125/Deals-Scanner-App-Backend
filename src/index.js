@@ -27,22 +27,34 @@ app.use(helmet());
 app.use(express.json({ limit: "1mb" }));
 
 /* =========================
+   USER IDENTITY MIDDLEWARE
+   (EMAIL VIA HEADER)
+========================= */
+app.use((req, res, next) => {
+  const email = String(req.headers["x-user-email"] || "").trim().toLowerCase();
+
+  if (email) {
+    req.user = { id: email };
+  } else {
+    req.user = null;
+  }
+
+  next();
+});
+
+/* =========================
    CORS (BASE44 + PROD + DEV)
 ========================= */
 app.use(
   cors({
     origin: (origin, cb) => {
-      // server-to-server (curl, internal, render)
       if (!origin) return cb(null, true);
 
-      // production domains
       if (origin === "https://dealsscanner.ca") return cb(null, origin);
       if (origin === "https://www.dealsscanner.ca") return cb(null, origin);
 
-      // Base44 editor
       if (origin === "https://app.base44.com") return cb(null, origin);
 
-      // Base44 preview sandboxes (*.base44.app)
       try {
         const u = new URL(origin);
         if (u.hostname.endsWith(".base44.app")) {
@@ -50,7 +62,6 @@ app.use(
         }
       } catch {}
 
-      // local development
       if (
         origin.startsWith("http://localhost:") ||
         origin.startsWith("http://127.0.0.1:")
@@ -64,6 +75,7 @@ app.use(
     allowedHeaders: [
       "Content-Type",
       "x-admin-key",
+      "x-user-email",
       "Authorization",
       "X-Requested-With",
     ],
