@@ -2,6 +2,7 @@ import express from "express";
 import crypto from "node:crypto";
 import { readDeals, writeDeals } from "../services/dealStore.js";
 import { classifyDealCategory } from "../services/classifyDealCategory.js";
+import { addUserPoints } from "../services/userStore.js";
 
 const router = express.Router();
 
@@ -205,8 +206,12 @@ router.post("/deals", async (req, res) => {
     expiresAt: null,
     clicks: 0,
 
-    // ✅ NEW: persist the submitting user so we can award points later on approval
+    // persist submitter so we can award points on approval
     createdByUserId: req.user?.id || null,
+
+    // points guard
+    pointsAwarded: false,
+    pointsAwardedAt: null,
   };
 
   store.deals.unshift(deal);
@@ -335,6 +340,10 @@ router.post("/admin/deals", async (req, res) => {
     updatedAt: now,
     expiresAt: null,
     clicks: 0,
+
+    createdByUserId: null,
+    pointsAwarded: false,
+    pointsAwardedAt: null,
   };
 
   store.deals.unshift(deal);
@@ -363,6 +372,29 @@ router.post("/admin/deals/:id/approve", (req, res) => {
 
   deal.status = "approved";
   deal.updatedAt = new Date().toISOString();
+
+  // ✅ Award points exactly once
+  const POINTS_FOR_APPROVED_DEAL = 25;
+
+  const submitterId = String(deal.createdByUserId || "").trim();
+  const alreadyAwarded = deal.pointsAwarded === true;
+
+  if (submitterId && !alreadyAwarded) {
+    const result = addUserPoints(submitterId, POINTS_FOR_APPROVED_DEAL);
+
+    if (result?.ok) {
+      deal.pointsAwarded = true;
+      deal.pointsAwardedAt = new Date().toISOString();
+      deal.pointsAwardedToUserId = submitterId;
+      deal.pointsAwardedAmount = POINTS_FOR_APPROVED_DEAL;
+    } else {
+      console.warn("Points award failed for deal approval:", {
+        dealId: deal.id,
+        submitterId,
+        error: result?.error || "unknown",
+      });
+    }
+  }
 
   writeDeals(store);
   res.json({ ok: true, deal });
