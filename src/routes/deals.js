@@ -89,14 +89,12 @@ router.get("/deals", (req, res) => {
 
   const now = Date.now();
 
-  // only valid + live deals
   deals = deals.filter((d) => {
     if (d.status !== "approved") return false;
     if (d.expiresAt && new Date(d.expiresAt).getTime() <= now) return false;
     return true;
   });
 
-  // CATEGORY
   if (category && category !== "All") {
     deals = deals.filter(
       (d) =>
@@ -105,12 +103,10 @@ router.get("/deals", (req, res) => {
     );
   }
 
-  // MAX PRICE
   if (maxPrice) {
     deals = deals.filter((d) => Number(d.price) <= Number(maxPrice));
   }
 
-  // DISCOUNT FILTER (ex: /deals?discount=50)
   if (discount) {
     const min = Number(discount);
 
@@ -125,14 +121,12 @@ router.get("/deals", (req, res) => {
     });
   }
 
-  // SORT: NEWEST
   if (sort === "newest") {
     deals = deals.sort(
       (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
     );
   }
 
-  // SORT: TRENDING (by clicks)
   if (sort === "trending") {
     deals = deals.sort((a, b) => (b.clicks || 0) - (a.clicks || 0));
   }
@@ -205,11 +199,7 @@ router.post("/deals", async (req, res) => {
     updatedAt: now,
     expiresAt: null,
     clicks: 0,
-
-    // persist submitter so we can award points on approval
     createdByUserId: req.user?.id || null,
-
-    // points guard
     pointsAwarded: false,
     pointsAwardedAt: null,
   };
@@ -265,7 +255,6 @@ router.post("/reportDeal", (req, res) => {
     const store = ensureReports(readDeals());
 
     const dealId = req.body?.dealId || req.body?.deal_id || "";
-
     const reason = (req.body?.reason || "").trim();
     const notes = (req.body?.notes || "").trim() || null;
 
@@ -290,7 +279,6 @@ router.post("/reportDeal", (req, res) => {
     };
 
     store.reports.unshift(report);
-
     writeDeals(store);
 
     res.json({ ok: true, report });
@@ -340,7 +328,6 @@ router.post("/admin/deals", async (req, res) => {
     updatedAt: now,
     expiresAt: null,
     clicks: 0,
-
     createdByUserId: null,
     pointsAwarded: false,
     pointsAwardedAt: null,
@@ -373,7 +360,6 @@ router.post("/admin/deals/:id/approve", (req, res) => {
   deal.status = "approved";
   deal.updatedAt = new Date().toISOString();
 
-  // ✅ Award points exactly once
   const POINTS_FOR_APPROVED_DEAL = 25;
 
   const submitterId = String(deal.createdByUserId || "").trim();
@@ -387,12 +373,6 @@ router.post("/admin/deals/:id/approve", (req, res) => {
       deal.pointsAwardedAt = new Date().toISOString();
       deal.pointsAwardedToUserId = submitterId;
       deal.pointsAwardedAmount = POINTS_FOR_APPROVED_DEAL;
-    } else {
-      console.warn("Points award failed for deal approval:", {
-        dealId: deal.id,
-        submitterId,
-        error: result?.error || "unknown",
-      });
     }
   }
 
@@ -473,15 +453,6 @@ router.put("/admin/deals/:id", (req, res) => {
         }
         return alert;
       });
-
-      console.log(
-        `Price alerts triggered for deal ${id}:`,
-        triggeredAlerts.map((a) => ({
-          alertId: a.id,
-          userId: a.userId || null,
-          targetPrice: a.targetPrice,
-        }))
-      );
     }
   }
 
