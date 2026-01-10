@@ -9,16 +9,28 @@ import { DEALS_FILE } from "../config/paths.js";
    - Same schema per file
    - Public/admin code selects the file by country
    - Default country: CA (safe)
+
+   FIX INCLUDED (CRITICAL):
+   - If any caller mistakenly does writeDeals(store) without passing country,
+     and the store clearly contains ONLY US deals, we auto-route that write
+     into the US file instead of silently writing into CA.
+   - This prevents the exact bug you are seeing:
+       ADMIN shows a US deal (because it was stored inside CA with country:"US")
+       but PUBLIC /deals?country=US reads US file -> empty -> 0 deals
 ===================================================== */
 
 /* =====================================================
-   FILE PATHS
+   COUNTRY NORMALIZATION
 ===================================================== */
 
 function normalizeCountry(input) {
   const c = String(input || "").trim().toUpperCase();
   return c === "US" ? "US" : "CA";
 }
+
+/* =====================================================
+   FILE PATHS
+===================================================== */
 
 function buildCountryFile(baseFilePath, country) {
   // If DEALS_FILE is ".../deals.json" -> ".../deals-US.json" / ".../deals-CA.json"
@@ -47,11 +59,7 @@ console.log("💾 Deal store US file:", getActiveDealsFile("US"));
 console.log("💾 Deal store CA file:", getActiveDealsFile("CA"));
 
 /* =====================================================
-   AUTO-MIGRATION (SINGLE FILE -> CA FILE)
-   - Your existing setup had one ACTIVE file (DEALS_FILE)
-   - We migrate that data into the CA file only (safe default)
-   - We also migrate from older legacy locations into CA
-   - We NEVER merge into US unless you explicitly do a backfill later
+   SAFE JSON HELPERS
 ===================================================== */
 
 function readDealsCount(filePath) {
@@ -85,15 +93,17 @@ function hasDealsData(obj) {
   return !!obj && Array.isArray(obj.deals) && obj.deals.length > 0;
 }
 
+/* =====================================================
+   AUTO-MIGRATION (SINGLE FILE -> CA FILE)
+   - Migrates legacy single-store deals into CA ONLY
+===================================================== */
+
 function migrateSingleStoreToCA() {
   try {
     const CA_FILE = getActiveDealsFile("CA");
     const CA_EXISTS = fs.existsSync(CA_FILE);
     const CA_COUNT = CA_EXISTS ? readDealsCount(CA_FILE) : 0;
 
-    // Candidate sources (highest priority first)
-    // 1) Current "single store" file (DEALS_FILE) if it exists (common in your current setup)
-    // 2) Older legacy locations you already supported
     const CANDIDATES = [
       DEALS_FILE,
       path.join(process.cwd(), "src", "data", "deals.json"),
@@ -102,7 +112,6 @@ function migrateSingleStoreToCA() {
 
     console.log("🔍 Checking migration candidates:", CANDIDATES);
 
-    // Find first candidate that exists and has deals
     let source = null;
     let sourceCount = 0;
 
@@ -121,8 +130,6 @@ function migrateSingleStoreToCA() {
       return;
     }
 
-    // Only migrate into CA if CA doesn't exist OR CA is empty
-    // This avoids overwriting a populated CA file.
     if (!CA_EXISTS || CA_COUNT === 0) {
       const parsed = safeReadJson(source);
 
@@ -131,7 +138,6 @@ function migrateSingleStoreToCA() {
         return;
       }
 
-      // Ensure schema: deals/reports/alerts
       const out = {
         updatedAt: new Date().toISOString(),
         deals: Array.isArray(parsed.deals) ? parsed.deals : [],
@@ -139,9 +145,7 @@ function migrateSingleStoreToCA() {
         alerts: Array.isArray(parsed.alerts) ? parsed.alerts : [],
       };
 
-      // IMPORTANT: default everything to CA if missing, but do NOT rewrite
-      // deal.country here—keep deal objects unchanged (smallest change).
-      // Your routes already default missing country to CA safely.
+      // Do NOT rewrite deal.country here.
       safeWriteJson(CA_FILE, out);
 
       console.log("✨ Migrated single-store deals into CA file:", {
@@ -196,8 +200,12 @@ function ensureStore(country = "CA") {
   }
 }
 
+// Make sure BOTH files exist on boot (prevents “empty US file never created” confusion)
+ensureStore("CA");
+ensureStore("US");
+
 /* =====================================================
-   HELPERS
+   STRING/URL HELPERS
 ===================================================== */
 
 function normalize(str) {
@@ -253,9 +261,6 @@ function backupCurrentFile(activeFile) {
 
 /* =====================================================
    READ (DEFAULT CA)
-   - Signature supports optional country:
-     readDeals() -> CA
-     readDeals("US") -> US
 ===================================================== */
 
 export function readDeals(country = "CA") {
@@ -288,24 +293,73 @@ export function readDeals(country = "CA") {
 
 /* =====================================================
    WRITE — PROTECTED (DEFAULT CA)
-   - Signature supports optional country:
-     writeDeals(storeOrDealsArray) -> CA
-     writeDeals("US", storeOrDealsArray) -> US
+
+   IMPORTANT FIX:
+   Some callers accidentally do writeDeals(store) (no country).
+   If that "store" clearly contains ONLY US deals, we auto-route
+   the write to US to avoid “US deals stored in CA file”.
+
+   Supported:
+     writeDeals(input) -> inferred if possible, else CA
+     writeDeals(country, input) -> explicit
 ===================================================== */
+
+function extractDealsArray(input) {
+  if (Array.isArray(input)) return input;
+  if (input && typeof input === "object" && Array.isArray(input.deals)) return input.deals;
+  return null;
+}
+
+function inferCountryFromInput(input) {
+  // 1) If caller provided a top-level country
+  if (input && typeof input === "object" && input.country) {
+    return normalizeCountry(input.country);
+  }
+
+  const deals = extractDealsArray(input);
+  if (!deals || deals.length === 0) return null;
+
+  // 2) Infer from deal.country values
+  let hasUS = false;
+  let hasCA = false;
+
+  for (const d of deals) {
+    const c = String(d?.country || "").trim().toUpperCase();
+    if (c === "US") hasUS = true;
+    else if (c === "CA") hasCA = true;
+    else {
+      // missing/unknown counts as CA-side legacy
+      hasCA = true;
+    }
+    if (hasUS && hasCA) break;
+  }
+
+  // If it's clearly ONLY US, treat as US.
+  if (hasUS && !hasCA) return "US";
+
+  // If mixed or only CA/legacy, do not infer (stay CA default).
+  return null;
+}
 
 function parseWriteArgs(a, b) {
   // Supports:
   //   writeDeals(input)
   //   writeDeals(country, input)
-  // Where country is "US" or "CA".
   if (typeof a === "string" && b !== undefined) {
-    return { country: normalizeCountry(a), input: b };
+    return { country: normalizeCountry(a), input: b, inferred: false };
   }
-  return { country: "CA", input: a };
+
+  // No explicit country: attempt to infer safely.
+  const inferred = inferCountryFromInput(a);
+  if (inferred === "US") {
+    return { country: "US", input: a, inferred: true };
+  }
+
+  return { country: "CA", input: a, inferred: false };
 }
 
 export function writeDeals(a, b) {
-  const { country, input } = parseWriteArgs(a, b);
+  const { country, input, inferred } = parseWriteArgs(a, b);
 
   const c = normalizeCountry(country);
   const ACTIVE_DEALS_FILE = getActiveDealsFile(c);
@@ -341,6 +395,10 @@ export function writeDeals(a, b) {
     return;
   }
 
+  if (inferred) {
+    console.log("🧠 writeDeals: inferred country from input ->", c);
+  }
+
   backupCurrentFile(ACTIVE_DEALS_FILE);
 
   fs.writeFileSync(
@@ -360,9 +418,6 @@ export function writeDeals(a, b) {
 
 /* =====================================================
    UPSERT (DEFAULT CA)
-   - Signature supports optional country:
-     upsertDeals(incoming) -> CA
-     upsertDeals("US", incoming) -> US
 ===================================================== */
 
 function parseUpsertArgs(a, b) {
