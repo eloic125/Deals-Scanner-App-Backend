@@ -6,7 +6,6 @@ import helmet from "helmet";
 import healthRoutes from "./routes/health.js";
 import dealsRoutes from "./routes/deals.js";
 import redirectRoutes from "./routes/redirect.js";
-import adminRoutes from "./routes/admin.js";
 import alertsRoutes from "./routes/alerts.js";
 import usersRoutes from "./routes/users.js";
 
@@ -53,7 +52,6 @@ app.use(
 
       if (origin === "https://dealsscanner.ca") return cb(null, origin);
       if (origin === "https://www.dealsscanner.ca") return cb(null, origin);
-
       if (origin === "https://app.base44.com") return cb(null, origin);
 
       try {
@@ -96,7 +94,6 @@ app.options(/.*/, cors());
 app.use("/", healthRoutes);
 app.use("/", dealsRoutes);
 app.use("/", redirectRoutes);
-app.use("/", adminRoutes);
 app.use("/", alertsRoutes);
 app.use("/", usersRoutes);
 
@@ -106,7 +103,6 @@ app.use("/", usersRoutes);
 app.use("/api", healthRoutes);
 app.use("/api", dealsRoutes);
 app.use("/api", redirectRoutes);
-app.use("/api", adminRoutes);
 app.use("/api", alertsRoutes);
 app.use("/api", usersRoutes);
 
@@ -116,7 +112,6 @@ app.use("/api", usersRoutes);
 app.use("/api/v1", healthRoutes);
 app.use("/api/v1", dealsRoutes);
 app.use("/api/v1", redirectRoutes);
-app.use("/api/v1", adminRoutes);
 app.use("/api/v1", alertsRoutes);
 app.use("/api/v1", usersRoutes);
 
