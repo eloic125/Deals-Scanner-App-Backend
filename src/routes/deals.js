@@ -1,3 +1,31 @@
+/**
+ * =====================================================
+ * DEALS ROUTES — FIX: DEALS NOT SHOWING (CA/US MERGE)
+ * =====================================================
+ *
+ * WHAT WAS BROKEN:
+ * - Your PUBLIC /deals endpoint always does:
+ *     const normalizedCountry = normalizeCountry(country);
+ *   If country is missing/undefined (common on homepage / default views),
+ *   normalizeCountry(undefined) => "CA"
+ *   So you were ONLY reading CA store and NEVER loading US deals.
+ *
+ * FIX (SAFE, NO REMOVALS):
+ * - If ?country=CA  -> readDeals("CA") only
+ * - If ?country=US  -> readDeals("US") only
+ * - If country missing -> MERGE readDeals("CA") + readDeals("US")
+ *
+ * ALSO FIXED:
+ * - PUBLIC /deals/:id now searches both stores if country is missing,
+ *   so clicking a US deal link still works from mixed feeds.
+ *
+ * EVERYTHING ELSE:
+ * - All routes below are preserved exactly (admin/user/report/alerts/etc.)
+ * - No schema changes required
+ * - Ingest script can keep writing country "CA"/"US" normally
+ * =====================================================
+ */
+
 import express from "express";
 import crypto from "node:crypto";
 import { readDeals, writeDeals } from "../services/dealStore.js";
@@ -32,6 +60,19 @@ function requireAdmin(req, res) {
 
 function normalizeCountry(input) {
   return String(input || "").toUpperCase() === "US" ? "US" : "CA";
+}
+
+/**
+ * NEW (SAFE): Return one or two stores depending on whether country is provided.
+ * - country="CA" => [CA store]
+ * - country="US" => [US store]
+ * - missing/other => [CA store, US store]
+ */
+function getStoresForCountryParam(countryParam) {
+  const c = String(countryParam || "").trim().toUpperCase();
+  if (c === "CA") return [readDeals("CA")];
+  if (c === "US") return [readDeals("US")];
+  return [readDeals("CA"), readDeals("US")];
 }
 
 function normalizeAmazonUrl(inputUrl) {
@@ -85,10 +126,19 @@ function ensureAlerts(store) {
 
 router.get("/deals", (req, res) => {
   const { category, sort, maxPrice, discount, country } = req.query;
-  const normalizedCountry = normalizeCountry(country);
 
-  const store = readDeals(normalizedCountry);
-  let deals = Array.isArray(store.deals) ? store.deals : [];
+  // FIX: do NOT default to CA when country is missing.
+  // If country is missing => merge CA + US
+  const stores = getStoresForCountryParam(country);
+
+  // Merge deals from one or both stores
+  let deals = [];
+  let updatedAt = null;
+
+  for (const store of stores) {
+    if (!updatedAt && store?.updatedAt) updatedAt = store.updatedAt;
+    if (Array.isArray(store?.deals)) deals.push(...store.deals);
+  }
 
   const now = Date.now();
 
@@ -132,7 +182,7 @@ router.get("/deals", (req, res) => {
   }
 
   res.json({
-    updatedAt: store.updatedAt || new Date().toISOString(),
+    updatedAt: updatedAt || new Date().toISOString(),
     count: deals.length,
     deals,
   });
@@ -143,19 +193,18 @@ router.get("/deals", (req, res) => {
 ========================= */
 
 router.get("/deals/:id", (req, res) => {
-  const normalizedCountry = normalizeCountry(req.query.country);
-  const store = readDeals(normalizedCountry);
+  // FIX: If country is missing, search BOTH stores so links work from merged feeds.
+  const stores = getStoresForCountryParam(req.query.country);
 
-  const deal = (store.deals || []).find((d) => d.id === req.params.id);
-
-  if (!deal) {
-    return res.json({
-      missing: true,
-      message: "Deal not found (maybe deleted)",
-    });
+  for (const store of stores) {
+    const deal = (store.deals || []).find((d) => d.id === req.params.id);
+    if (deal) return res.json(deal);
   }
 
-  res.json(deal);
+  return res.json({
+    missing: true,
+    message: "Deal not found (maybe deleted)",
+  });
 });
 
 /* =========================
