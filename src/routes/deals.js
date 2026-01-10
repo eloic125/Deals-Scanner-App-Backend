@@ -4,25 +4,23 @@
  * =====================================================
  *
  * WHAT WAS BROKEN:
- * - Your PUBLIC /deals endpoint always does:
- *     const normalizedCountry = normalizeCountry(country);
- *   If country is missing/undefined (common on homepage / default views),
- *   normalizeCountry(undefined) => "CA"
- *   So you were ONLY reading CA store and NEVER loading US deals.
+ * - PUBLIC /deals always defaulted country to "CA"
+ *   when ?country was missing.
+ * - US deals were correctly ingested but NEVER read.
  *
  * FIX (SAFE, NO REMOVALS):
- * - If ?country=CA  -> readDeals("CA") only
- * - If ?country=US  -> readDeals("US") only
- * - If country missing -> MERGE readDeals("CA") + readDeals("US")
+ * - ?country=CA  -> readDeals("CA") only
+ * - ?country=US  -> readDeals("US") only
+ * - no country   -> MERGE CA + US
  *
  * ALSO FIXED:
- * - PUBLIC /deals/:id now searches both stores if country is missing,
- *   so clicking a US deal link still works from mixed feeds.
+ * - /deals/:id searches BOTH stores when country missing
  *
- * EVERYTHING ELSE:
- * - All routes below are preserved exactly (admin/user/report/alerts/etc.)
- * - No schema changes required
- * - Ingest script can keep writing country "CA"/"US" normally
+ * GUARANTEES:
+ * - NO routes removed
+ * - NO schema changes
+ * - WRITE operations remain country-specific
+ * - Ingest script remains unchanged
  * =====================================================
  */
 
@@ -58,16 +56,12 @@ function requireAdmin(req, res) {
    HELPERS
 ========================= */
 
+// WRITE-SIDE normalization (safe default)
 function normalizeCountry(input) {
   return String(input || "").toUpperCase() === "US" ? "US" : "CA";
 }
 
-/**
- * NEW (SAFE): Return one or two stores depending on whether country is provided.
- * - country="CA" => [CA store]
- * - country="US" => [US store]
- * - missing/other => [CA store, US store]
- */
+// READ-SIDE resolver (CRITICAL FIX)
 function getStoresForCountryParam(countryParam) {
   const c = String(countryParam || "").trim().toUpperCase();
   if (c === "CA") return [readDeals("CA")];
@@ -127,11 +121,8 @@ function ensureAlerts(store) {
 router.get("/deals", (req, res) => {
   const { category, sort, maxPrice, discount, country } = req.query;
 
-  // FIX: do NOT default to CA when country is missing.
-  // If country is missing => merge CA + US
   const stores = getStoresForCountryParam(country);
 
-  // Merge deals from one or both stores
   let deals = [];
   let updatedAt = null;
 
@@ -166,19 +157,18 @@ router.get("/deals", (req, res) => {
       const p = Number(d.price);
       const op = Number(d.originalPrice);
       if (!op || !p || op <= 0) return false;
-      const percent = Math.round(((op - p) / op) * 100);
-      return percent >= min;
+      return Math.round(((op - p) / op) * 100) >= min;
     });
   }
 
   if (sort === "newest") {
-    deals = deals.sort(
+    deals.sort(
       (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
     );
   }
 
   if (sort === "trending") {
-    deals = deals.sort((a, b) => (b.clicks || 0) - (a.clicks || 0));
+    deals.sort((a, b) => (b.clicks || 0) - (a.clicks || 0));
   }
 
   res.json({
@@ -189,11 +179,10 @@ router.get("/deals", (req, res) => {
 });
 
 /* =========================
-   PUBLIC — DEAL DETAILS (COUNTRY SAFE)
+   PUBLIC — DEAL DETAILS
 ========================= */
 
 router.get("/deals/:id", (req, res) => {
-  // FIX: If country is missing, search BOTH stores so links work from merged feeds.
   const stores = getStoresForCountryParam(req.query.country);
 
   for (const store of stores) {
@@ -201,7 +190,7 @@ router.get("/deals/:id", (req, res) => {
     if (deal) return res.json(deal);
   }
 
-  return res.json({
+  res.json({
     missing: true,
     message: "Deal not found (maybe deleted)",
   });
