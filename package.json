@@ -12,6 +12,8 @@
     "author": "",
     "license": "ISC",
     "dependencies": {
+        "@capacitor/cli": "^8.0.0",
+        "@capacitor/core": "^8.0.0",
         "cloudinary": "^2.8.0",
         "cors": "^2.8.5",
         "dotenv": "^17.2.3",

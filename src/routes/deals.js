@@ -30,6 +30,10 @@ function requireAdmin(req, res) {
    HELPERS
 ========================= */
 
+function normalizeCountry(input) {
+  return String(input || "").toUpperCase() === "US" ? "US" : "CA";
+}
+
 function normalizeAmazonUrl(inputUrl) {
   try {
     const url = String(inputUrl || "").trim();
@@ -71,9 +75,7 @@ function ensureReports(store) {
 }
 
 function ensureAlerts(store) {
-  if (!Array.isArray(store.alerts)) {
-    store.alerts = [];
-  }
+  if (!Array.isArray(store.alerts)) store.alerts = [];
   return store;
 }
 
@@ -82,9 +84,10 @@ function ensureAlerts(store) {
 ========================= */
 
 router.get("/deals", (req, res) => {
-  const { category, sort, maxPrice, discount } = req.query;
+  const { category, sort, maxPrice, discount, country } = req.query;
+  const normalizedCountry = normalizeCountry(country);
 
-  const store = readDeals();
+  const store = readDeals(normalizedCountry);
   let deals = Array.isArray(store.deals) ? store.deals : [];
 
   const now = Date.now();
@@ -109,13 +112,10 @@ router.get("/deals", (req, res) => {
 
   if (discount) {
     const min = Number(discount);
-
     deals = deals.filter((d) => {
       const p = Number(d.price);
       const op = Number(d.originalPrice);
-
       if (!op || !p || op <= 0) return false;
-
       const percent = Math.round(((op - p) / op) * 100);
       return percent >= min;
     });
@@ -139,18 +139,21 @@ router.get("/deals", (req, res) => {
 });
 
 /* =========================
-   PUBLIC — DEAL DETAILS
+   PUBLIC — DEAL DETAILS (COUNTRY SAFE)
 ========================= */
 
 router.get("/deals/:id", (req, res) => {
-  const store = readDeals();
+  const normalizedCountry = normalizeCountry(req.query.country);
+  const store = readDeals(normalizedCountry);
+
   const deal = (store.deals || []).find((d) => d.id === req.params.id);
 
-  if (!deal)
+  if (!deal) {
     return res.json({
       missing: true,
       message: "Deal not found (maybe deleted)",
     });
+  }
 
   res.json(deal);
 });
@@ -161,25 +164,21 @@ router.get("/deals/:id", (req, res) => {
 
 router.post("/deals", async (req, res) => {
   const body = req.body || {};
-  const store = readDeals();
+  const normalizedCountry = normalizeCountry(body.country);
+  const store = readDeals(normalizedCountry);
   const now = new Date().toISOString();
 
   if (!body.title || typeof body.price !== "number") {
-    return res.status(400).json({
-      error: "title and price are required",
-    });
+    return res.status(400).json({ error: "title and price are required" });
   }
 
   let category = "Other";
-
   try {
     category = await classifyDealCategory({
       title: body.title,
       description: body.notes || body.description || "",
     });
-  } catch {
-    category = "Other";
-  }
+  } catch {}
 
   const isAdmin =
     String(req.headers["x-admin-key"] || "").trim() === ADMIN_KEY;
@@ -195,6 +194,7 @@ router.post("/deals", async (req, res) => {
     notes: body.notes || null,
     url: normalizeAmazonUrl(body.url),
     status: isAdmin ? "approved" : "pending",
+    country: normalizedCountry,
     createdAt: now,
     updatedAt: now,
     expiresAt: null,
@@ -205,113 +205,63 @@ router.post("/deals", async (req, res) => {
   };
 
   store.deals.unshift(deal);
-  writeDeals(store);
+  writeDeals(normalizedCountry, store);
 
-  res.status(201).json({
-    ok: true,
-    pending: !isAdmin,
-    deal,
-  });
+  res.status(201).json({ ok: true, pending: !isAdmin, deal });
 });
 
 /* =========================
-   USER — REPORT DEAL (OLD)
+   USER — REPORT DEAL
 ========================= */
 
 router.post("/deals/:id/report", (req, res) => {
-  const { id } = req.params;
-  const body = req.body || {};
-  const store = ensureReports(readDeals());
+  const normalizedCountry = normalizeCountry(req.body?.country);
+  const store = ensureReports(readDeals(normalizedCountry));
 
-  const deal = (store.deals || []).find((d) => d.id === id);
+  const deal = store.deals.find((d) => d.id === req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
 
-  if (!body.reason)
+  if (!req.body?.reason)
     return res.status(400).json({ error: "reason is required" });
 
-  const report = {
+  store.reports.push({
     id: crypto.randomUUID(),
-    dealId: id,
-    reason: String(body.reason),
-    notes: body.notes ? String(body.notes) : null,
-    userId: req.user?.id || body.userId || null,
+    dealId: deal.id,
+    reason: String(req.body.reason),
+    notes: req.body.notes ? String(req.body.notes) : null,
+    userId: req.user?.id || null,
     status: "pending",
     user_seen: false,
     createdAt: new Date().toISOString(),
-  };
+  });
 
-  store.reports.push(report);
-  writeDeals(store);
-
-  res.json({ ok: true, report });
+  writeDeals(normalizedCountry, store);
+  res.json({ ok: true });
 });
 
 /* =========================
-   USER — REPORT DEAL (Base44 /reportDeal)
-========================= */
-
-router.post("/reportDeal", (req, res) => {
-  try {
-    const store = ensureReports(readDeals());
-
-    const dealId = req.body?.dealId || req.body?.deal_id || "";
-    const reason = (req.body?.reason || "").trim();
-    const notes = (req.body?.notes || "").trim() || null;
-
-    if (!dealId || !reason) {
-      return res
-        .status(400)
-        .json({ error: "Deal ID and reason are required" });
-    }
-
-    const deal = (store.deals || []).find((d) => d.id === dealId);
-    if (!deal) return res.status(404).json({ error: "Deal not found" });
-
-    const report = {
-      id: crypto.randomUUID(),
-      dealId,
-      reason,
-      notes,
-      userId: req.user?.id || null,
-      status: "pending",
-      user_seen: false,
-      createdAt: new Date().toISOString(),
-    };
-
-    store.reports.unshift(report);
-    writeDeals(store);
-
-    res.json({ ok: true, report });
-  } catch (err) {
-    console.error("reportDeal failed:", err);
-    res.status(500).json({ error: "Failed to submit report" });
-  }
-});
-
-/* =========================
-   ADMIN — CREATE / MANAGE
+   ADMIN — CREATE
 ========================= */
 
 router.post("/admin/deals", async (req, res) => {
   if (!requireAdmin(req, res)) return;
 
   const body = req.body || {};
-  const store = readDeals();
+  const normalizedCountry = normalizeCountry(body.country);
+  const store = readDeals(normalizedCountry);
   const now = new Date().toISOString();
 
-  if (!body.title || typeof body.price !== "number")
+  if (!body.title || typeof body.price !== "number") {
     return res.status(400).json({ error: "title and price required" });
+  }
 
   let category = "Other";
-
   try {
     category = await classifyDealCategory({
       title: body.title,
       description: body.notes || "",
     });
-  } catch {
-    category = "Other";
-  }
+  } catch {}
 
   const deal = {
     id: crypto.randomUUID(),
@@ -324,6 +274,7 @@ router.post("/admin/deals", async (req, res) => {
     notes: body.notes || null,
     url: normalizeAmazonUrl(body.url),
     status: "approved",
+    country: normalizedCountry,
     createdAt: now,
     updatedAt: now,
     expiresAt: null,
@@ -334,77 +285,80 @@ router.post("/admin/deals", async (req, res) => {
   };
 
   store.deals.unshift(deal);
-  writeDeals(store);
+  writeDeals(normalizedCountry, store);
 
   res.status(201).json({ ok: true, deal });
 });
 
+/* =========================
+   ADMIN — PENDING
+========================= */
+
 router.get("/admin/deals/pending", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const store = readDeals();
-  const deals = (store.deals || []).filter((d) => d.status === "pending");
+  const normalizedCountry = normalizeCountry(req.query.country);
+  const store = readDeals(normalizedCountry);
 
-  res.json({ ok: true, deals });
+  res.json({
+    ok: true,
+    deals: store.deals.filter((d) => d.status === "pending"),
+  });
 });
+
+/* =========================
+   ADMIN — APPROVE / REJECT / UPDATE / DELETE
+========================= */
 
 router.post("/admin/deals/:id/approve", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const { id } = req.params;
-  const store = readDeals();
+  const normalizedCountry = normalizeCountry(req.body?.country);
+  const store = readDeals(normalizedCountry);
 
-  const deal = store.deals.find((d) => d.id === id);
+  const deal = store.deals.find((d) => d.id === req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
 
   deal.status = "approved";
   deal.updatedAt = new Date().toISOString();
 
-  const POINTS_FOR_APPROVED_DEAL = 25;
-
-  const submitterId = String(deal.createdByUserId || "").trim();
-  const alreadyAwarded = deal.pointsAwarded === true;
-
-  if (submitterId && !alreadyAwarded) {
-    const result = addUserPoints(submitterId, POINTS_FOR_APPROVED_DEAL);
-
-    if (result?.ok) {
+  const POINTS = 25;
+  if (deal.createdByUserId && !deal.pointsAwarded) {
+    const r = addUserPoints(deal.createdByUserId, POINTS);
+    if (r?.ok) {
       deal.pointsAwarded = true;
       deal.pointsAwardedAt = new Date().toISOString();
-      deal.pointsAwardedToUserId = submitterId;
-      deal.pointsAwardedAmount = POINTS_FOR_APPROVED_DEAL;
+      deal.pointsAwardedAmount = POINTS;
     }
   }
 
-  writeDeals(store);
+  writeDeals(normalizedCountry, store);
   res.json({ ok: true, deal });
 });
 
 router.post("/admin/deals/:id/reject", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const { id } = req.params;
-  const store = readDeals();
+  const normalizedCountry = normalizeCountry(req.body?.country);
+  const store = readDeals(normalizedCountry);
 
-  const deal = store.deals.find((d) => d.id === id);
+  const deal = store.deals.find((d) => d.id === req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
 
   deal.status = "rejected";
   deal.updatedAt = new Date().toISOString();
 
-  writeDeals(store);
+  writeDeals(normalizedCountry, store);
   res.json({ ok: true, deal });
 });
 
 router.put("/admin/deals/:id", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const { id } = req.params;
-  const updates = req.body || {};
+  const normalizedCountry = normalizeCountry(req.body?.country);
+  const store = ensureAlerts(readDeals(normalizedCountry));
 
-  const store = ensureAlerts(readDeals());
-
-  const idx = store.deals.findIndex((d) => d.id === id);
+  const idx = store.deals.findIndex((d) => d.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: "Deal not found" });
 
   const existing = store.deals[idx];
@@ -412,74 +366,50 @@ router.put("/admin/deals/:id", (req, res) => {
 
   const next = {
     ...existing,
-    ...updates,
+    ...req.body,
     updatedAt: new Date().toISOString(),
   };
 
-  if (updates.url) next.url = normalizeAmazonUrl(updates.url);
+  if (req.body.url) next.url = normalizeAmazonUrl(req.body.url);
 
   const newPrice = Number(next.price);
-  const priceChanged =
+  if (
     Number.isFinite(oldPrice) &&
     Number.isFinite(newPrice) &&
-    newPrice !== oldPrice;
-
-  let triggeredAlerts = [];
-  if (priceChanged && Array.isArray(store.alerts) && store.alerts.length > 0) {
+    newPrice !== oldPrice
+  ) {
     const now = new Date().toISOString();
-    triggeredAlerts = store.alerts.filter(
-      (alert) =>
-        alert &&
-        !alert.triggeredAt &&
-        alert.dealId === id &&
-        typeof alert.targetPrice === "number" &&
-        newPrice <= alert.targetPrice
+    store.alerts = store.alerts.map((a) =>
+      a &&
+      !a.triggeredAt &&
+      a.dealId === next.id &&
+      typeof a.targetPrice === "number" &&
+      newPrice <= a.targetPrice
+        ? { ...a, triggeredAt: now, active: false }
+        : a
     );
-
-    if (triggeredAlerts.length > 0) {
-      store.alerts = store.alerts.map((alert) => {
-        if (
-          alert &&
-          !alert.triggeredAt &&
-          alert.dealId === id &&
-          typeof alert.targetPrice === "number" &&
-          newPrice <= alert.targetPrice
-        ) {
-          return {
-            ...alert,
-            triggeredAt: now,
-            active: false,
-          };
-        }
-        return alert;
-      });
-    }
   }
 
   store.deals[idx] = next;
+  writeDeals(normalizedCountry, store);
 
-  writeDeals(store);
-  res.json({
-    ok: true,
-    deal: next,
-    triggeredAlertsCount: triggeredAlerts.length,
-  });
+  res.json({ ok: true, deal: next });
 });
 
 router.delete("/admin/deals/:id", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const { id } = req.params;
-  const store = readDeals();
+  const normalizedCountry = normalizeCountry(req.body?.country);
+  const store = readDeals(normalizedCountry);
 
-  const idx = store.deals.findIndex((d) => d.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Deal not found" });
+  const deal = store.deals.find((d) => d.id === req.params.id);
+  if (!deal) return res.status(404).json({ error: "Deal not found" });
 
-  store.deals[idx].status = "disabled";
-  store.deals[idx].expiresAt = new Date().toISOString();
-  store.deals[idx].updatedAt = new Date().toISOString();
+  deal.status = "disabled";
+  deal.expiresAt = new Date().toISOString();
+  deal.updatedAt = new Date().toISOString();
 
-  writeDeals(store);
+  writeDeals(normalizedCountry, store);
   res.json({ ok: true });
 });
 
