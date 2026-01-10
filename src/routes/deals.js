@@ -1,26 +1,22 @@
 /**
  * =====================================================
- * DEALS ROUTES — FIX: DEALS NOT SHOWING (CA/US MERGE)
+ * DEALS ROUTES — STRICT COUNTRY FILTER (NO MERGE)
  * =====================================================
  *
- * WHAT WAS BROKEN:
- * - PUBLIC /deals always defaulted country to "CA"
- *   when ?country was missing.
- * - US deals were correctly ingested but NEVER read.
+ * YOU WANT:
+ * - ?country=CA  -> ONLY CA deals
+ * - ?country=US  -> ONLY US deals
+ * - no country   -> DEFAULT CA (SAFE) (NO MERGE)
  *
- * FIX (SAFE, NO REMOVALS):
- * - ?country=CA  -> readDeals("CA") only
- * - ?country=US  -> readDeals("US") only
- * - no country   -> MERGE CA + US
+ * FIX:
+ * - remove merge logic from public reads
+ * - keep ALL existing routes
+ * - keep ALL write operations country-specific
+ * - keep ingest unchanged
  *
- * ALSO FIXED:
- * - /deals/:id searches BOTH stores when country missing
- *
- * GUARANTEES:
- * - NO routes removed
- * - NO schema changes
- * - WRITE operations remain country-specific
- * - Ingest script remains unchanged
+ * NOTE:
+ * - Admin endpoints already read from correct store when country is provided.
+ * - Public endpoints will NEVER merge CA+US anymore.
  * =====================================================
  */
 
@@ -58,15 +54,12 @@ function requireAdmin(req, res) {
 
 // WRITE-SIDE normalization (safe default)
 function normalizeCountry(input) {
-  return String(input || "").toUpperCase() === "US" ? "US" : "CA";
+  return String(input || "").trim().toUpperCase() === "US" ? "US" : "CA";
 }
 
-// READ-SIDE resolver (CRITICAL FIX)
-function getStoresForCountryParam(countryParam) {
-  const c = String(countryParam || "").trim().toUpperCase();
-  if (c === "CA") return [readDeals("CA")];
-  if (c === "US") return [readDeals("US")];
-  return [readDeals("CA"), readDeals("US")];
+// READ-SIDE STRICT (NO MERGE) — DEFAULT CA IF MISSING
+function resolveReadCountry(countryParam) {
+  return normalizeCountry(countryParam);
 }
 
 function normalizeAmazonUrl(inputUrl) {
@@ -121,15 +114,12 @@ function ensureAlerts(store) {
 router.get("/deals", (req, res) => {
   const { category, sort, maxPrice, discount, country } = req.query;
 
-  const stores = getStoresForCountryParam(country);
+  // STRICT: only one store, never merge
+  const readCountry = resolveReadCountry(country);
+  const store = readDeals(readCountry);
 
-  let deals = [];
-  let updatedAt = null;
-
-  for (const store of stores) {
-    if (!updatedAt && store?.updatedAt) updatedAt = store.updatedAt;
-    if (Array.isArray(store?.deals)) deals.push(...store.deals);
-  }
+  let deals = Array.isArray(store?.deals) ? [...store.deals] : [];
+  const updatedAt = store?.updatedAt || new Date().toISOString();
 
   const now = Date.now();
 
@@ -172,7 +162,7 @@ router.get("/deals", (req, res) => {
   }
 
   res.json({
-    updatedAt: updatedAt || new Date().toISOString(),
+    updatedAt,
     count: deals.length,
     deals,
   });
@@ -183,14 +173,14 @@ router.get("/deals", (req, res) => {
 ========================= */
 
 router.get("/deals/:id", (req, res) => {
-  const stores = getStoresForCountryParam(req.query.country);
+  // STRICT: only one store, never search both
+  const readCountry = resolveReadCountry(req.query.country);
+  const store = readDeals(readCountry);
 
-  for (const store of stores) {
-    const deal = (store.deals || []).find((d) => d.id === req.params.id);
-    if (deal) return res.json(deal);
-  }
+  const deal = (store.deals || []).find((d) => d.id === req.params.id);
+  if (deal) return res.json(deal);
 
-  res.json({
+  return res.status(404).json({
     missing: true,
     message: "Deal not found (maybe deleted)",
   });
