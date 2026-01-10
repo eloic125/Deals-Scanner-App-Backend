@@ -12,42 +12,47 @@ const router = express.Router();
 
 /* =====================================================
    ADMIN AUTH
-   Supports BOTH:
-   1) Logged-in Base44 admin (req.user.role === admin)
-   2) x-admin-key header (server/admin scripts)
 ===================================================== */
 
-const ADMIN_KEY =
-  (process.env.ADMIN_KEY && process.env.ADMIN_KEY.trim()) || "";
+const ADMIN_KEY = (process.env.ADMIN_KEY || "").trim();
 
 function requireAdmin(req, res, next) {
-  try {
-    // 1) Prefer authenticated Base44 user
-    if (req.user) {
-      if (req.user.role === "admin") {
-        return next();
-      }
-      return res.status(403).json({ error: "Forbidden" });
-    }
+  // Base44 authenticated admin
+  if (req.user?.role === "admin") return next();
 
-    // 2) Fallback — x-admin-key (ingest, tools, scripts)
-    const headerKey = String(req.headers["x-admin-key"] || "").trim();
-
-    if (!ADMIN_KEY) {
-      console.error("ADMIN_KEY missing in backend environment");
-      return res.status(500).json({ error: "Server misconfiguration" });
-    }
-
-    if (!headerKey || headerKey !== ADMIN_KEY) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
-
-    next();
-  } catch (err) {
-    console.error("Admin check failed:", err);
-    res.status(500).json({ error: "Admin check failed" });
+  // Fallback: x-admin-key (ingest, scripts)
+  const headerKey = String(req.headers["x-admin-key"] || "").trim();
+  if (!ADMIN_KEY) {
+    console.error("ADMIN_KEY missing");
+    return res.status(500).json({ error: "Server misconfigured" });
   }
+  if (headerKey !== ADMIN_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
 }
+
+/* =====================================================
+   COUNTRY HANDLING — CRITICAL FIX
+===================================================== */
+
+function normalizeCountry(input) {
+  return String(input || "").trim().toUpperCase() === "US" ? "US" : "CA";
+}
+
+// Priority:
+// 1) ?country=US
+// 2) body.country
+// 3) CA (safe default)
+function resolveCountry(req) {
+  if (req.query?.country) return normalizeCountry(req.query.country);
+  if (req.body?.country) return normalizeCountry(req.body.country);
+  return "CA";
+}
+
+/* =====================================================
+   HELPERS
+===================================================== */
 
 function normalize(v) {
   return String(v || "").trim();
@@ -61,14 +66,8 @@ function matchesDeal(deal, idOrKey) {
   );
 }
 
-/* =====================================================
-   UTILITY — ENSURE REPORTS ARRAY EXISTS
-===================================================== */
-
 function ensureReports(store) {
-  if (!Array.isArray(store.reports)) {
-    store.reports = [];
-  }
+  if (!Array.isArray(store.reports)) store.reports = [];
   return store;
 }
 
@@ -77,47 +76,56 @@ function ensureReports(store) {
 ===================================================== */
 
 router.post("/admin/deals", requireAdmin, (req, res) => {
-  const body = req.body || {};
-  const store = readDeals();
-  const deals = Array.isArray(store.deals) ? store.deals : [];
+  const country = resolveCountry(req);
+  const store = readDeals(country);
 
   const now = new Date().toISOString();
 
   const deal = {
-    id: body.id || crypto.randomUUID(),
-    title: body.title || "Untitled",
-    price: body.price ? Number(body.price) : 0,
-    originalPrice: body.originalPrice ? Number(body.originalPrice) : null,
-    retailer: body.retailer || "Unknown",
-    category: body.category || "Other",
-    imageUrl: body.imageUrl || "",
-    url: body.url || "",
-    notes: body.notes || "",
-    status: body.status || "approved",
-    expiresAt: body.expiresAt || null,
+    id: req.body.id || crypto.randomUUID(),
+    title: req.body.title || "Untitled",
+    price: Number(req.body.price || 0),
+    originalPrice: req.body.originalPrice
+      ? Number(req.body.originalPrice)
+      : null,
+    retailer: req.body.retailer || "Unknown",
+    category: req.body.category || "Other",
+    imageUrl: req.body.imageUrl || null,
+    url: req.body.url || null,
+    notes: req.body.notes || null,
+    status: req.body.status || "approved",
+    expiresAt: req.body.expiresAt || null,
+    country,
     createdAt: now,
     updatedAt: now,
   };
 
-  deals.unshift(deal);
-  writeDeals({ ...store, deals });
+  store.deals.unshift(deal);
+  writeDeals(country, store);
 
-  res.json({ ok: true, deal });
+  res.json({ ok: true, country, deal });
 });
 
 /* =====================================================
    BULK UPSERT — POST /admin/deals/bulk
+   (INGEST ENTRY POINT — FIXED)
 ===================================================== */
 
 router.post("/admin/deals/bulk", requireAdmin, (req, res) => {
+  const country = resolveCountry(req);
   const incoming = Array.isArray(req.body?.deals) ? req.body.deals : [];
 
   if (!incoming.length) {
     return res.status(400).json({ error: "No deals provided" });
   }
 
-  const result = upsertDeals(incoming);
-  res.json(result);
+  // FORCE country on every deal (ingest safety)
+  for (const d of incoming) {
+    d.country = country;
+  }
+
+  const result = upsertDeals(country, incoming);
+  res.json({ ok: true, country, ...result });
 });
 
 /* =====================================================
@@ -125,19 +133,21 @@ router.post("/admin/deals/bulk", requireAdmin, (req, res) => {
 ===================================================== */
 
 router.put("/admin/deals/:id", requireAdmin, (req, res) => {
+  const country = resolveCountry(req);
   const id = normalize(req.params.id);
-  const store = readDeals();
-  const deals = store.deals;
 
-  const deal = deals.find((d) => matchesDeal(d, id));
+  const store = readDeals(country);
+  const deal = store.deals.find((d) => matchesDeal(d, id));
+
   if (!deal) return res.status(404).json({ error: "Deal not found" });
 
   Object.assign(deal, req.body, {
+    country,
     updatedAt: new Date().toISOString(),
   });
 
-  writeDeals(store);
-  res.json({ ok: true, deal });
+  writeDeals(country, store);
+  res.json({ ok: true, country, deal });
 });
 
 /* =====================================================
@@ -145,61 +155,20 @@ router.put("/admin/deals/:id", requireAdmin, (req, res) => {
 ===================================================== */
 
 router.delete("/admin/deals/:id", requireAdmin, (req, res) => {
+  const country = resolveCountry(req);
   const id = normalize(req.params.id);
-  const store = readDeals();
+
+  const store = readDeals(country);
   const before = store.deals.length;
 
-  const filtered = store.deals.filter((d) => !matchesDeal(d, id));
+  store.deals = store.deals.filter((d) => !matchesDeal(d, id));
 
-  if (filtered.length === before) {
+  if (store.deals.length === before) {
     return res.status(404).json({ error: "Deal not found" });
   }
 
-  writeDeals({ ...store, deals: filtered });
-  res.json({ ok: true, deleted: before - filtered.length });
-});
-
-/* =====================================================
-   DELETE — POST /admin/deals/:id/delete
-===================================================== */
-
-router.post("/admin/deals/:id/delete", requireAdmin, (req, res) => {
-  const id = normalize(req.params.id);
-  const store = readDeals();
-  const before = store.deals.length;
-
-  const filtered = store.deals.filter((d) => !matchesDeal(d, id));
-
-  if (filtered.length === before) {
-    return res.status(404).json({ error: "Deal not found" });
-  }
-
-  writeDeals({ ...store, deals: filtered });
-  res.json({ ok: true, deleted: before - filtered.length });
-});
-
-/* =====================================================
-   DELETE — DELETE /admin/deals?id=...
-===================================================== */
-
-router.delete("/admin/deals", requireAdmin, (req, res) => {
-  const key = normalize(req.query.sourceKey || req.query.id);
-
-  if (!key) {
-    return res.status(400).json({ error: "id or sourceKey required" });
-  }
-
-  const store = readDeals();
-  const before = store.deals.length;
-
-  const filtered = store.deals.filter((d) => !matchesDeal(d, key));
-
-  if (filtered.length === before) {
-    return res.status(404).json({ error: "Deal not found" });
-  }
-
-  writeDeals({ ...store, deals: filtered });
-  res.json({ ok: true, deleted: before - filtered.length });
+  writeDeals(country, store);
+  res.json({ ok: true, country, deleted: before - store.deals.length });
 });
 
 /* =====================================================
@@ -207,73 +176,70 @@ router.delete("/admin/deals", requireAdmin, (req, res) => {
 ===================================================== */
 
 router.get("/admin/deals", requireAdmin, (req, res) => {
-  res.json(readDeals());
+  const country = resolveCountry(req);
+  res.json(readDeals(country));
 });
 
 /* =====================================================
-   REPORTS — ADMIN VIEW ALL
+   REPORTS — ADMIN VIEW
 ===================================================== */
 
 router.get("/admin/reports", requireAdmin, (req, res) => {
-  const store = ensureReports(readDeals());
-  res.json({ reports: store.reports || [] });
+  const country = resolveCountry(req);
+  const store = ensureReports(readDeals(country));
+  res.json({ country, reports: store.reports });
 });
 
 /* =====================================================
-   REPORTS — ADMIN RESOLVE
+   REPORT RESOLVE
 ===================================================== */
 
 router.post("/admin/reports/:id/resolve", requireAdmin, (req, res) => {
+  const country = resolveCountry(req);
   const reportId = normalize(req.params.id);
-  const store = ensureReports(readDeals());
 
+  const store = ensureReports(readDeals(country));
   const report = store.reports.find((r) => r.id === reportId);
-  if (!report) {
-    return res.status(404).json({ error: "Report not found" });
-  }
+
+  if (!report) return res.status(404).json({ error: "Report not found" });
 
   report.status = "reviewed";
   report.reviewedAt = new Date().toISOString();
 
-  writeDeals(store);
-  res.json({ ok: true, report });
+  writeDeals(country, store);
+  res.json({ ok: true, country, report });
 });
 
 /* =====================================================
-   PUBLIC REPORT DEAL — POST /reports
+   PUBLIC REPORT DEAL
 ===================================================== */
 
 router.post("/reports", (req, res) => {
-  const body = req.body || {};
-  const deal_id = String(body.deal_id || "").trim();
-  const reason = String(body.reason || "").trim();
-  const notes = body.notes || null;
+  const country = resolveCountry(req);
+  const dealId = normalize(req.body?.deal_id);
+  const reason = normalize(req.body?.reason);
 
-  if (!deal_id || !reason) {
-    return res
-      .status(400)
-      .json({ error: "Deal ID and reason are required" });
+  if (!dealId || !reason) {
+    return res.status(400).json({ error: "deal_id and reason required" });
   }
 
-  const store = ensureReports(readDeals());
-  const deals = Array.isArray(store.deals) ? store.deals : [];
-
-  const deal = deals.find((d) => matchesDeal(d, deal_id));
+  const store = ensureReports(readDeals(country));
+  const deal = store.deals.find((d) => matchesDeal(d, dealId));
 
   const report = {
     id: crypto.randomUUID(),
-    deal_id,
+    deal_id: dealId,
     reason,
-    notes,
+    notes: req.body.notes || null,
     status: "pending",
     createdAt: new Date().toISOString(),
     dealTitle: deal?.title || null,
   };
 
   store.reports.unshift(report);
-  writeDeals(store);
+  writeDeals(country, store);
 
-  res.json({ ok: true, report });
+  res.json({ ok: true, country, report });
 });
 
 export default router;
