@@ -3,16 +3,16 @@
  * DEALS ROUTES — STRICT COUNTRY FILTER (NO MERGE)
  * =====================================================
  *
- * BEHAVIOR (FINAL):
+ * FINAL BEHAVIOR:
  * - ?country=CA  -> READ CA FILE ONLY
  * - ?country=US  -> READ US FILE ONLY
- * - no country   -> DEFAULT CA (SAFE)
+ * - no country   -> DEFAULT CA
  *
- * IMPORTANT:
+ * RULES:
  * - PUBLIC reads NEVER merge
- * - ADMIN reads/writes are ALWAYS country-specific
- * - Ingest remains unchanged
- * - Works with dealStore.js country-split files
+ * - ADMIN reads/writes ALWAYS country-specific
+ * - DELETE = soft delete (disabled + expiresAt)
+ * - Compatible with country-split dealStore.js
  * =====================================================
  */
 
@@ -45,12 +45,11 @@ function requireAdmin(req, res) {
 }
 
 /* =========================
-   COUNTRY HELPERS
+   COUNTRY (SINGLE SOURCE)
 ========================= */
 
-// WRITE-SIDE + READ-SIDE (SINGLE SOURCE OF TRUTH)
-function normalizeCountry(input) {
-  return String(input || "").trim().toUpperCase() === "US" ? "US" : "CA";
+function normalizeCountry(v) {
+  return String(v || "").trim().toUpperCase() === "US" ? "US" : "CA";
 }
 
 /* =========================
@@ -78,11 +77,11 @@ function normalizeAmazonUrl(inputUrl) {
     const asin = match?.[1]?.toUpperCase();
     if (!asin) return u.toString();
 
-    let marketplace = "www.amazon.com";
-    if (host.includes("amazon.ca")) marketplace = "www.amazon.ca";
+    const marketplace = host.includes("amazon.ca")
+      ? "www.amazon.ca"
+      : "www.amazon.com";
 
     const tag = u.searchParams.get("tag");
-
     const out = new URL(`https://${marketplace}/dp/${asin}`);
     if (tag) out.searchParams.set("tag", tag);
 
@@ -111,14 +110,13 @@ function ensureAlerts(store) {
 ========================= */
 
 router.get("/deals", (req, res) => {
-  const { category, sort, maxPrice, discount, country } = req.query;
+  const { category, sort, maxPrice, discount } = req.query;
+  const country = normalizeCountry(req.query.country);
 
-  const readCountry = normalizeCountry(country);
-  const store = readDeals(readCountry);
+  const store = readDeals(country);
+  const now = Date.now();
 
   let deals = Array.isArray(store.deals) ? [...store.deals] : [];
-  const updatedAt = store.updatedAt || new Date().toISOString();
-  const now = Date.now();
 
   deals = deals.filter((d) => {
     if (d.status !== "approved") return false;
@@ -159,7 +157,8 @@ router.get("/deals", (req, res) => {
   }
 
   res.json({
-    updatedAt,
+    country,
+    updatedAt: store.updatedAt || new Date().toISOString(),
     count: deals.length,
     deals,
   });
@@ -170,16 +169,13 @@ router.get("/deals", (req, res) => {
 ========================= */
 
 router.get("/deals/:id", (req, res) => {
-  const readCountry = normalizeCountry(req.query.country);
-  const store = readDeals(readCountry);
+  const country = normalizeCountry(req.query.country);
+  const store = readDeals(country);
 
-  const deal = (store.deals || []).find((d) => d.id === req.params.id);
+  const deal = store.deals.find((d) => d.id === req.params.id);
   if (deal) return res.json(deal);
 
-  return res.status(404).json({
-    missing: true,
-    message: "Deal not found",
-  });
+  return res.status(404).json({ error: "Deal not found" });
 });
 
 /* =========================
