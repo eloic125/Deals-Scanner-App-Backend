@@ -11,8 +11,18 @@
  * RULES:
  * - PUBLIC reads NEVER merge
  * - ADMIN reads/writes ALWAYS country-specific
- * - DELETE = soft delete (disabled + expiresAt)
+ * - DELETE = soft delete (status=disabled + expiresAt)
  * - Compatible with country-split dealStore.js
+ *
+ * CRITICAL FIX (YOUR BUG):
+ * - DELETE REQUESTS DO NOT HAVE A BODY IN PRACTICE
+ * - So admin delete MUST read country from:
+ *      1) req.query.country
+ *      2) req.headers["x-country"]
+ *      3) default "CA"
+ * - If you read req.body.country for DELETE, US deletes will silently hit CA store,
+ *   and you'll get "Deal not found" even though the deal exists in US.
+ *
  * =====================================================
  */
 
@@ -52,6 +62,93 @@ function normalizeCountry(v) {
   return String(v || "").trim().toUpperCase() === "US" ? "US" : "CA";
 }
 
+/**
+ * PUBLIC READ COUNTRY
+ * - Uses query only (safe) + default CA
+ */
+function publicReadCountry(req) {
+  return normalizeCountry(req.query?.country);
+}
+
+/**
+ * WRITE COUNTRY (POST /deals) — body is OK here
+ */
+function publicWriteCountry(req) {
+  if (req.body?.country) return normalizeCountry(req.body.country);
+  return normalizeCountry(req.query?.country);
+}
+
+/**
+ * ADMIN COUNTRY — MUST SUPPORT DELETE (no body)
+ * Priority:
+ * 1) query.country
+ * 2) header x-country
+ * 3) default CA
+ */
+function adminCountry(req) {
+  if (req.query?.country) return normalizeCountry(req.query.country);
+  if (req.headers?.["x-country"]) return normalizeCountry(req.headers["x-country"]);
+  return "CA";
+}
+
+/* =========================
+   BASIC HELPERS
+========================= */
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function str(v) {
+  return String(v || "").trim();
+}
+
+function lower(v) {
+  return String(v || "").trim().toLowerCase();
+}
+
+function toNumOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toNumOrZero(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function isExpired(deal, nowMs) {
+  if (!deal?.expiresAt) return false;
+  const t = new Date(deal.expiresAt).getTime();
+  return Number.isFinite(t) ? t <= nowMs : false;
+}
+
+function isApproved(deal) {
+  return String(deal?.status || "").trim() === "approved";
+}
+
+function ensureStore(store) {
+  const s = store && typeof store === "object" ? store : {};
+  if (!Array.isArray(s.deals)) s.deals = [];
+  if (!Array.isArray(s.reports)) s.reports = [];
+  if (!Array.isArray(s.alerts)) s.alerts = [];
+  if (!s.updatedAt) s.updatedAt = nowIso();
+  return s;
+}
+
+function ensureReports(store) {
+  const s = ensureStore(store);
+  if (!Array.isArray(s.reports)) s.reports = [];
+  return s;
+}
+
+function ensureAlerts(store) {
+  const s = ensureStore(store);
+  if (!Array.isArray(s.alerts)) s.alerts = [];
+  return s;
+}
+
 /* =========================
    URL NORMALIZATION
 ========================= */
@@ -61,9 +158,11 @@ function normalizeAmazonUrl(inputUrl) {
     const url = String(inputUrl || "").trim();
     if (!url) return null;
 
+    // ✅ FIX: template string must be backticks
     const u = new URL(url.startsWith("http") ? url : `https://${url}`);
     const host = u.hostname.toLowerCase();
 
+    // Non-amazon: strip tracking
     if (!host.includes("amazon.")) {
       u.search = "";
       u.hash = "";
@@ -77,11 +176,9 @@ function normalizeAmazonUrl(inputUrl) {
     const asin = match?.[1]?.toUpperCase();
     if (!asin) return u.toString();
 
-    const marketplace = host.includes("amazon.ca")
-      ? "www.amazon.ca"
-      : "www.amazon.com";
-
+    const marketplace = host.includes("amazon.ca") ? "www.amazon.ca" : "www.amazon.com";
     const tag = u.searchParams.get("tag");
+
     const out = new URL(`https://${marketplace}/dp/${asin}`);
     if (tag) out.searchParams.set("tag", tag);
 
@@ -92,17 +189,18 @@ function normalizeAmazonUrl(inputUrl) {
 }
 
 /* =========================
-   STORE GUARDS
+   FIND DEAL (ID ONLY)
+   (STRICT, predictable)
 ========================= */
 
-function ensureReports(store) {
-  if (!Array.isArray(store.reports)) store.reports = [];
-  return store;
+function findDealById(store, id) {
+  const deals = Array.isArray(store?.deals) ? store.deals : [];
+  return deals.find((d) => String(d?.id || "").trim() === String(id || "").trim()) || null;
 }
 
-function ensureAlerts(store) {
-  if (!Array.isArray(store.alerts)) store.alerts = [];
-  return store;
+function findDealIndexById(store, id) {
+  const deals = Array.isArray(store?.deals) ? store.deals : [];
+  return deals.findIndex((d) => String(d?.id || "").trim() === String(id || "").trim());
 }
 
 /* =========================
@@ -111,54 +209,57 @@ function ensureAlerts(store) {
 
 router.get("/deals", (req, res) => {
   const { category, sort, maxPrice, discount } = req.query;
-  const country = normalizeCountry(req.query.country);
 
-  const store = readDeals(country);
-  const now = Date.now();
+  const country = publicReadCountry(req);
+  const store = ensureStore(readDeals(country));
+  const nowMs = Date.now();
 
   let deals = Array.isArray(store.deals) ? [...store.deals] : [];
 
+  // PUBLIC shows approved + not expired only
   deals = deals.filter((d) => {
-    if (d.status !== "approved") return false;
-    if (d.expiresAt && new Date(d.expiresAt).getTime() <= now) return false;
+    if (!isApproved(d)) return false;
+    if (isExpired(d, nowMs)) return false;
     return true;
   });
 
-  if (category && category !== "All") {
-    deals = deals.filter(
-      (d) =>
-        String(d.category || "").toLowerCase() ===
-        String(category).toLowerCase()
-    );
+  // Category filter
+  if (category && String(category) !== "All") {
+    const want = lower(category);
+    deals = deals.filter((d) => lower(d?.category) === want);
   }
 
-  if (maxPrice) {
-    deals = deals.filter((d) => Number(d.price) <= Number(maxPrice));
+  // Max price filter
+  if (maxPrice !== undefined && maxPrice !== null && String(maxPrice).trim() !== "") {
+    const mp = Number(maxPrice);
+    if (Number.isFinite(mp)) {
+      deals = deals.filter((d) => Number(d.price) <= mp);
+    }
   }
 
-  if (discount) {
+  // Discount filter
+  if (discount !== undefined && discount !== null && String(discount).trim() !== "") {
     const min = Number(discount);
-    deals = deals.filter((d) => {
-      const p = Number(d.price);
-      const op = Number(d.originalPrice);
-      if (!op || !p || op <= 0) return false;
-      return Math.round(((op - p) / op) * 100) >= min;
-    });
+    if (Number.isFinite(min)) {
+      deals = deals.filter((d) => {
+        const p = Number(d.price);
+        const op = Number(d.originalPrice);
+        if (!op || !p || op <= 0) return false;
+        return Math.round(((op - p) / op) * 100) >= min;
+      });
+    }
   }
 
+  // Sorting
   if (sort === "newest") {
-    deals.sort(
-      (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
-    );
-  }
-
-  if (sort === "trending") {
+    deals.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  } else if (sort === "trending") {
     deals.sort((a, b) => (b.clicks || 0) - (a.clicks || 0));
   }
 
   res.json({
     country,
-    updatedAt: store.updatedAt || new Date().toISOString(),
+    updatedAt: store.updatedAt || nowIso(),
     count: deals.length,
     deals,
   });
@@ -169,13 +270,45 @@ router.get("/deals", (req, res) => {
 ========================= */
 
 router.get("/deals/:id", (req, res) => {
-  const country = normalizeCountry(req.query.country);
-  const store = readDeals(country);
+  const country = publicReadCountry(req);
+  const store = ensureStore(readDeals(country));
+  const deal = findDealById(store, req.params.id);
 
-  const deal = store.deals.find((d) => d.id === req.params.id);
-  if (deal) return res.json(deal);
+  if (!deal) return res.status(404).json({ error: "Deal not found" });
 
-  return res.status(404).json({ error: "Deal not found" });
+  // Public-only constraints
+  const nowMs = Date.now();
+  if (!isApproved(deal)) return res.status(404).json({ error: "Deal not found" });
+  if (isExpired(deal, nowMs)) return res.status(404).json({ error: "Deal not found" });
+
+  res.json(deal);
+});
+
+/* =========================
+   PUBLIC — CLICK TRACKING
+   (optional but useful)
+========================= */
+
+router.post("/deals/:id/click", (req, res) => {
+  const country = publicWriteCountry(req);
+  const store = ensureStore(readDeals(country));
+
+  const deal = findDealById(store, req.params.id);
+  if (!deal) return res.status(404).json({ error: "Deal not found" });
+
+  // Only count clicks on active approved deals
+  const nowMs = Date.now();
+  if (!isApproved(deal) || isExpired(deal, nowMs)) {
+    return res.status(400).json({ error: "Deal not active" });
+  }
+
+  deal.clicks = toNumOrZero(deal.clicks) + 1;
+  deal.updatedAt = nowIso();
+
+  store.updatedAt = nowIso();
+  writeDeals(country, store);
+
+  res.json({ ok: true, country, id: deal.id, clicks: deal.clicks });
 });
 
 /* =========================
@@ -184,50 +317,60 @@ router.get("/deals/:id", (req, res) => {
 
 router.post("/deals", async (req, res) => {
   const body = req.body || {};
-  const country = normalizeCountry(body.country);
-  const store = readDeals(country);
-  const now = new Date().toISOString();
+  const country = publicWriteCountry(req);
+  const store = ensureStore(readDeals(country));
+  const ts = nowIso();
 
-  if (!body.title || typeof body.price !== "number") {
-    return res.status(400).json({ error: "title and price are required" });
-  }
+  const title = str(body.title);
+  const price = toNumOrNull(body.price);
 
-  let category = "Other";
+  if (!title) return res.status(400).json({ error: "title and price are required" });
+  if (!Number.isFinite(price)) return res.status(400).json({ error: "title and price are required" });
+
+  const url = normalizeAmazonUrl(body.url) || str(body.url) || null;
+  if (!url) return res.status(400).json({ error: "url is required" });
+
+  let category = str(body.category) || "Other";
   try {
-    category = await classifyDealCategory({
-      title: body.title,
-      description: body.notes || body.description || "",
-    });
+    if (!body.category) {
+      category =
+        (await classifyDealCategory({
+          title,
+          description: str(body.notes || body.description || ""),
+        })) || "Other";
+      category = str(category) || "Other";
+    }
   } catch {}
 
-  const isAdmin =
-    String(req.headers["x-admin-key"] || "").trim() === ADMIN_KEY;
+  const isAdmin = str(req.headers["x-admin-key"]) === ADMIN_KEY;
 
   const deal = {
     id: crypto.randomUUID(),
-    title: String(body.title),
-    price: Number(body.price),
-    originalPrice: body.originalPrice ? Number(body.originalPrice) : null,
-    retailer: body.retailer || "Amazon",
+    title,
+    price: Number(price),
+    originalPrice: toNumOrNull(body.originalPrice),
+    retailer: str(body.retailer) || "Amazon",
     category,
-    imageUrl: body.imageUrl || null,
-    notes: body.notes || null,
-    url: normalizeAmazonUrl(body.url),
+    imageUrl: str(body.imageUrl) || null,
+    notes: str(body.notes) || null,
+    url,
     status: isAdmin ? "approved" : "pending",
     country,
-    createdAt: now,
-    updatedAt: now,
+    createdAt: ts,
+    updatedAt: ts,
     expiresAt: null,
     clicks: 0,
     createdByUserId: req.user?.id || null,
     pointsAwarded: false,
     pointsAwardedAt: null,
+    pointsAwardedAmount: null,
   };
 
   store.deals.unshift(deal);
+  store.updatedAt = ts;
   writeDeals(country, store);
 
-  res.status(201).json({ ok: true, pending: !isAdmin, deal });
+  res.status(201).json({ ok: true, pending: !isAdmin, country, deal });
 });
 
 /* =========================
@@ -235,33 +378,59 @@ router.post("/deals", async (req, res) => {
 ========================= */
 
 router.post("/deals/:id/report", (req, res) => {
-  const country = normalizeCountry(req.body?.country);
+  // report can use body.country, but fallback to query if missing
+  const country = publicWriteCountry(req);
   const store = ensureReports(readDeals(country));
 
-  const deal = store.deals.find((d) => d.id === req.params.id);
+  const deal = findDealById(store, req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
 
-  if (!req.body?.reason) {
-    return res.status(400).json({ error: "reason is required" });
-  }
+  const reason = str(req.body?.reason);
+  if (!reason) return res.status(400).json({ error: "reason is required" });
 
-  store.reports.push({
+  const report = {
     id: crypto.randomUUID(),
+    deal_id: deal.id,
     dealId: deal.id,
-    reason: String(req.body.reason),
-    notes: req.body.notes ? String(req.body.notes) : null,
+    reason,
+    notes: req.body?.notes ? String(req.body.notes) : null,
     userId: req.user?.id || null,
     status: "pending",
     user_seen: false,
-    createdAt: new Date().toISOString(),
-  });
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  };
 
+  store.reports.unshift(report);
+  store.updatedAt = nowIso();
   writeDeals(country, store);
-  res.json({ ok: true });
+
+  res.json({ ok: true, country, report });
+});
+
+/* =========================
+   ADMIN — LIST (STRICT)
+   GET /admin/deals?country=US|CA
+========================= */
+
+router.get("/admin/deals", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const country = adminCountry(req);
+  const store = ensureStore(readDeals(country));
+
+  res.json({
+    country,
+    updatedAt: store.updatedAt || nowIso(),
+    deals: Array.isArray(store.deals) ? store.deals : [],
+    reports: Array.isArray(store.reports) ? store.reports : [],
+    alerts: Array.isArray(store.alerts) ? store.alerts : [],
+  });
 });
 
 /* =========================
    ADMIN — CREATE
+   POST /admin/deals
 ========================= */
 
 router.post("/admin/deals", async (req, res) => {
@@ -269,153 +438,200 @@ router.post("/admin/deals", async (req, res) => {
 
   const body = req.body || {};
   const country = normalizeCountry(body.country);
-  const store = readDeals(country);
-  const now = new Date().toISOString();
+  const store = ensureStore(readDeals(country));
+  const ts = nowIso();
 
-  if (!body.title || typeof body.price !== "number") {
+  const title = str(body.title);
+  const price = toNumOrNull(body.price);
+
+  if (!title || !Number.isFinite(price)) {
     return res.status(400).json({ error: "title and price required" });
   }
 
-  let category = "Other";
+  const url = normalizeAmazonUrl(body.url) || str(body.url) || null;
+  if (!url) return res.status(400).json({ error: "url is required" });
+
+  let category = str(body.category) || "Other";
   try {
-    category = await classifyDealCategory({
-      title: body.title,
-      description: body.notes || "",
-    });
+    if (!body.category) {
+      category =
+        (await classifyDealCategory({
+          title,
+          description: str(body.notes || ""),
+        })) || "Other";
+      category = str(category) || "Other";
+    }
   } catch {}
 
   const deal = {
     id: crypto.randomUUID(),
-    title: String(body.title),
-    price: Number(body.price),
-    originalPrice: body.originalPrice ? Number(body.originalPrice) : null,
-    retailer: body.retailer || "Amazon",
+    title,
+    price: Number(price),
+    originalPrice: toNumOrNull(body.originalPrice),
+    retailer: str(body.retailer) || "Amazon",
     category,
-    imageUrl: body.imageUrl || null,
-    notes: body.notes || null,
-    url: normalizeAmazonUrl(body.url),
+    imageUrl: str(body.imageUrl) || null,
+    notes: str(body.notes) || null,
+    url,
     status: "approved",
     country,
-    createdAt: now,
-    updatedAt: now,
+    createdAt: ts,
+    updatedAt: ts,
     expiresAt: null,
     clicks: 0,
     createdByUserId: null,
     pointsAwarded: false,
     pointsAwardedAt: null,
+    pointsAwardedAmount: null,
   };
 
   store.deals.unshift(deal);
+  store.updatedAt = ts;
   writeDeals(country, store);
 
-  res.status(201).json({ ok: true, deal });
+  res.status(201).json({ ok: true, country, deal });
 });
 
 /* =========================
-   ADMIN — APPROVE / REJECT / UPDATE / DELETE
+   ADMIN — APPROVE
+   POST /admin/deals/:id/approve
 ========================= */
 
 router.post("/admin/deals/:id/approve", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const country = normalizeCountry(req.body?.country);
-  const store = readDeals(country);
+  // approve is POST -> body country is OK, but keep consistent:
+  const country = normalizeCountry(req.body?.country || req.query?.country);
+  const store = ensureStore(readDeals(country));
 
-  const deal = store.deals.find((d) => d.id === req.params.id);
+  const deal = findDealById(store, req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
 
   deal.status = "approved";
-  deal.updatedAt = new Date().toISOString();
+  deal.updatedAt = nowIso();
 
+  // Points awarding
   const POINTS = 25;
   if (deal.createdByUserId && !deal.pointsAwarded) {
     const r = addUserPoints(deal.createdByUserId, POINTS);
     if (r?.ok) {
       deal.pointsAwarded = true;
-      deal.pointsAwardedAt = new Date().toISOString();
+      deal.pointsAwardedAt = nowIso();
       deal.pointsAwardedAmount = POINTS;
     }
   }
 
+  store.updatedAt = nowIso();
   writeDeals(country, store);
-  res.json({ ok: true, deal });
+
+  res.json({ ok: true, country, deal });
 });
+
+/* =========================
+   ADMIN — REJECT
+   POST /admin/deals/:id/reject
+========================= */
 
 router.post("/admin/deals/:id/reject", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const country = normalizeCountry(req.body?.country);
-  const store = readDeals(country);
+  const country = normalizeCountry(req.body?.country || req.query?.country);
+  const store = ensureStore(readDeals(country));
 
-  const deal = store.deals.find((d) => d.id === req.params.id);
+  const deal = findDealById(store, req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
 
   deal.status = "rejected";
-  deal.updatedAt = new Date().toISOString();
+  deal.updatedAt = nowIso();
 
+  store.updatedAt = nowIso();
   writeDeals(country, store);
-  res.json({ ok: true, deal });
+
+  res.json({ ok: true, country, deal });
 });
+
+/* =========================
+   ADMIN — UPDATE
+   PUT /admin/deals/:id
+========================= */
 
 router.put("/admin/deals/:id", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const country = normalizeCountry(req.body?.country);
+  const country = normalizeCountry(req.body?.country || req.query?.country);
   const store = ensureAlerts(readDeals(country));
 
-  const idx = store.deals.findIndex((d) => d.id === req.params.id);
+  const idx = findDealIndexById(store, req.params.id);
   if (idx === -1) return res.status(404).json({ error: "Deal not found" });
 
   const existing = store.deals[idx];
-  const oldPrice = Number(existing.price);
+  const oldPrice = Number(existing?.price);
 
+  const patch = req.body || {};
   const next = {
     ...existing,
-    ...req.body,
-    updatedAt: new Date().toISOString(),
+    ...patch,
+    // force country consistency
+    country,
+    updatedAt: nowIso(),
   };
 
-  if (req.body.url) next.url = normalizeAmazonUrl(req.body.url);
+  if (patch.url) next.url = normalizeAmazonUrl(patch.url) || str(patch.url) || null;
 
+  // Price-drop triggers for alerts (if you use backend alerts)
   const newPrice = Number(next.price);
   if (
     Number.isFinite(oldPrice) &&
     Number.isFinite(newPrice) &&
     newPrice !== oldPrice
   ) {
-    const now = new Date().toISOString();
-    store.alerts = store.alerts.map((a) =>
-      a &&
-      !a.triggeredAt &&
-      a.dealId === next.id &&
-      typeof a.targetPrice === "number" &&
-      newPrice <= a.targetPrice
-        ? { ...a, triggeredAt: now, active: false }
-        : a
-    );
+    const ts = nowIso();
+    store.alerts = Array.isArray(store.alerts)
+      ? store.alerts.map((a) => {
+          if (
+            a &&
+            !a.triggeredAt &&
+            (a.dealId === next.id || a.deal_id === next.id) &&
+            typeof a.targetPrice === "number" &&
+            newPrice <= a.targetPrice
+          ) {
+            return { ...a, triggeredAt: ts, active: false };
+          }
+          return a;
+        })
+      : [];
   }
 
   store.deals[idx] = next;
+  store.updatedAt = nowIso();
   writeDeals(country, store);
 
-  res.json({ ok: true, deal: next });
+  res.json({ ok: true, country, deal: next });
 });
+
+/* =========================
+   ADMIN — DELETE (SOFT DELETE)
+   DELETE /admin/deals/:id?country=US|CA
+   ✅ FIXED: uses query/header, NOT body
+========================= */
 
 router.delete("/admin/deals/:id", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const country = normalizeCountry(req.body?.country);
-  const store = readDeals(country);
+  const country = adminCountry(req); // ✅ CRITICAL FIX FOR YOUR US DELETE BUG
+  const store = ensureStore(readDeals(country));
 
-  const deal = store.deals.find((d) => d.id === req.params.id);
+  const deal = findDealById(store, req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
 
   deal.status = "disabled";
-  deal.expiresAt = new Date().toISOString();
-  deal.updatedAt = new Date().toISOString();
+  deal.expiresAt = nowIso();
+  deal.updatedAt = nowIso();
 
+  store.updatedAt = nowIso();
   writeDeals(country, store);
-  res.json({ ok: true });
+
+  res.json({ ok: true, country, id: deal.id });
 });
 
 export default router;
