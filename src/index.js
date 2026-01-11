@@ -78,6 +78,7 @@ app.use(
       "Content-Type",
       "x-admin-key",
       "x-user-email",
+      "x-country",          // ✅ FIX — REQUIRED
       "Authorization",
       "X-Requested-With",
     ],
@@ -99,7 +100,7 @@ app.use("/", dealsRoutes);
 app.use("/", redirectRoutes);
 app.use("/", alertsRoutes);
 app.use("/", usersRoutes);
-app.use("/", adminRoutes); // ✅ ADMIN ROUTES LIVE
+app.use("/", adminRoutes);
 
 /* =========================
    ROUTES — /api
@@ -109,7 +110,7 @@ app.use("/api", dealsRoutes);
 app.use("/api", redirectRoutes);
 app.use("/api", alertsRoutes);
 app.use("/api", usersRoutes);
-app.use("/api", adminRoutes); // ✅ ADMIN ROUTES LIVE
+app.use("/api", adminRoutes);
 
 /* =========================
    ROUTES — /api/v1
@@ -119,7 +120,7 @@ app.use("/api/v1", dealsRoutes);
 app.use("/api/v1", redirectRoutes);
 app.use("/api/v1", alertsRoutes);
 app.use("/api/v1", usersRoutes);
-app.use("/api/v1", adminRoutes); // ✅ ADMIN ROUTES LIVE
+app.use("/api/v1", adminRoutes);
 
 /* =========================
    CORS ERROR HANDLER
