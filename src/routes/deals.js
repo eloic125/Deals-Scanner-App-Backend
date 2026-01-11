@@ -4,9 +4,9 @@
  * =====================================================
  *
  * FINAL BEHAVIOR:
- * - ?country=CA  -> READ CA FILE ONLY
- * - ?country=US  -> READ US FILE ONLY
- * - no country   -> DEFAULT CA
+ * - country=CA  -> READ/WRITE CA FILE ONLY
+ * - country=US  -> READ/WRITE US FILE ONLY
+ * - missing     -> DEFAULT CA
  *
  * RULES:
  * - PUBLIC reads NEVER merge
@@ -14,14 +14,15 @@
  * - DELETE = soft delete (status=disabled + expiresAt)
  * - Compatible with country-split dealStore.js
  *
- * CRITICAL FIX (YOUR BUG):
- * - DELETE REQUESTS DO NOT HAVE A BODY IN PRACTICE
- * - So admin delete MUST read country from:
+ * CRITICAL FIX (YOUR US BUG CLASS):
+ * - Many requests (DELETE, some POSTs) DO NOT reliably include body.country
+ * - So country must be resolvable from:
  *      1) req.query.country
  *      2) req.headers["x-country"]
- *      3) default "CA"
- * - If you read req.body.country for DELETE, US deletes will silently hit CA store,
- *   and you'll get "Deal not found" even though the deal exists in US.
+ *      3) req.body.country (when present)
+ *      4) default "CA"
+ * - If you depend on req.body.country for admin delete or US mutations,
+ *   US ops will silently hit CA store and appear "not found".
  *
  * =====================================================
  */
@@ -63,32 +64,43 @@ function normalizeCountry(v) {
 }
 
 /**
- * PUBLIC READ COUNTRY
- * - Uses query only (safe) + default CA
+ * Resolve country from request in a robust way.
+ * Priority is designed to work with:
+ * - GET (query usually present OR header used by app)
+ * - POST/PUT (body sometimes present)
+ * - DELETE (body often missing)
  */
-function publicReadCountry(req) {
-  return normalizeCountry(req.query?.country);
-}
-
-/**
- * WRITE COUNTRY (POST /deals) — body is OK here
- */
-function publicWriteCountry(req) {
-  if (req.body?.country) return normalizeCountry(req.body.country);
-  return normalizeCountry(req.query?.country);
-}
-
-/**
- * ADMIN COUNTRY — MUST SUPPORT DELETE (no body)
- * Priority:
- * 1) query.country
- * 2) header x-country
- * 3) default CA
- */
-function adminCountry(req) {
+function resolveCountry(req, { allowBody = true } = {}) {
   if (req.query?.country) return normalizeCountry(req.query.country);
   if (req.headers?.["x-country"]) return normalizeCountry(req.headers["x-country"]);
+  if (allowBody && req.body?.country) return normalizeCountry(req.body.country);
   return "CA";
+}
+
+/**
+ * PUBLIC READ COUNTRY
+ * - Strict single country
+ * - Uses query first, but supports header fallback for app/webview
+ */
+function publicReadCountry(req) {
+  return resolveCountry(req, { allowBody: false });
+}
+
+/**
+ * PUBLIC WRITE COUNTRY
+ * - For POST/report/click where body may or may not include country
+ */
+function publicWriteCountry(req) {
+  return resolveCountry(req, { allowBody: true });
+}
+
+/**
+ * ADMIN COUNTRY
+ * - Must work for DELETE (no body)
+ */
+function adminCountry(req) {
+  // For admin we still prefer query/header, but accept body as fallback.
+  return resolveCountry(req, { allowBody: true });
 }
 
 /* =========================
@@ -158,7 +170,6 @@ function normalizeAmazonUrl(inputUrl) {
     const url = String(inputUrl || "").trim();
     if (!url) return null;
 
-    // ✅ FIX: template string must be backticks
     const u = new URL(url.startsWith("http") ? url : `https://${url}`);
     const host = u.hostname.toLowerCase();
 
@@ -286,10 +297,10 @@ router.get("/deals/:id", (req, res) => {
 
 /* =========================
    PUBLIC — CLICK TRACKING
-   (optional but useful)
 ========================= */
 
 router.post("/deals/:id/click", (req, res) => {
+  // IMPORTANT: click requests often have no body; use header/query too.
   const country = publicWriteCountry(req);
   const store = ensureStore(readDeals(country));
 
@@ -378,7 +389,7 @@ router.post("/deals", async (req, res) => {
 ========================= */
 
 router.post("/deals/:id/report", (req, res) => {
-  // report can use body.country, but fallback to query if missing
+  // IMPORTANT: report must work with header/query when body.country missing.
   const country = publicWriteCountry(req);
   const store = ensureReports(readDeals(country));
 
@@ -500,8 +511,8 @@ router.post("/admin/deals", async (req, res) => {
 router.post("/admin/deals/:id/approve", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  // approve is POST -> body country is OK, but keep consistent:
-  const country = normalizeCountry(req.body?.country || req.query?.country);
+  // IMPORTANT: approval requests might not send body.country; support query/header too.
+  const country = adminCountry(req);
   const store = ensureStore(readDeals(country));
 
   const deal = findDealById(store, req.params.id);
@@ -535,7 +546,7 @@ router.post("/admin/deals/:id/approve", (req, res) => {
 router.post("/admin/deals/:id/reject", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const country = normalizeCountry(req.body?.country || req.query?.country);
+  const country = adminCountry(req);
   const store = ensureStore(readDeals(country));
 
   const deal = findDealById(store, req.params.id);
@@ -558,7 +569,8 @@ router.post("/admin/deals/:id/reject", (req, res) => {
 router.put("/admin/deals/:id", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const country = normalizeCountry(req.body?.country || req.query?.country);
+  // IMPORTANT: keep robust across clients
+  const country = adminCountry(req);
   const store = ensureAlerts(readDeals(country));
 
   const idx = findDealIndexById(store, req.params.id);
@@ -571,8 +583,7 @@ router.put("/admin/deals/:id", (req, res) => {
   const next = {
     ...existing,
     ...patch,
-    // force country consistency
-    country,
+    country, // force country consistency
     updatedAt: nowIso(),
   };
 
@@ -580,11 +591,7 @@ router.put("/admin/deals/:id", (req, res) => {
 
   // Price-drop triggers for alerts (if you use backend alerts)
   const newPrice = Number(next.price);
-  if (
-    Number.isFinite(oldPrice) &&
-    Number.isFinite(newPrice) &&
-    newPrice !== oldPrice
-  ) {
+  if (Number.isFinite(oldPrice) && Number.isFinite(newPrice) && newPrice !== oldPrice) {
     const ts = nowIso();
     store.alerts = Array.isArray(store.alerts)
       ? store.alerts.map((a) => {
@@ -612,13 +619,12 @@ router.put("/admin/deals/:id", (req, res) => {
 /* =========================
    ADMIN — DELETE (SOFT DELETE)
    DELETE /admin/deals/:id?country=US|CA
-   ✅ FIXED: uses query/header, NOT body
 ========================= */
 
 router.delete("/admin/deals/:id", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
-  const country = adminCountry(req); // ✅ CRITICAL FIX FOR YOUR US DELETE BUG
+  const country = adminCountry(req); // ✅ works even when DELETE body is absent
   const store = ensureStore(readDeals(country));
 
   const deal = findDealById(store, req.params.id);
