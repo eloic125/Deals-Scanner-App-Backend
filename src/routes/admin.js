@@ -47,13 +47,14 @@ function normalizeCountry(v) {
  * ORDER (CRITICAL):
  * 1) ?country=US
  * 2) body.country
- * 3) x-country header  <-- ingest FIX
+ * 3) x-country header
  * 4) CA default
  */
 function resolveCountry(req) {
   if (req.query?.country) return normalizeCountry(req.query.country);
   if (req.body?.country) return normalizeCountry(req.body.country);
-  if (req.headers?.["x-country"]) return normalizeCountry(req.headers["x-country"]);
+  if (req.headers?.["x-country"])
+    return normalizeCountry(req.headers["x-country"]);
   return "CA";
 }
 
@@ -120,7 +121,6 @@ router.post("/admin/deals", requireAdmin, (req, res) => {
 
 /* =====================================================
    ADMIN BULK UPSERT — POST /admin/deals/bulk
-   (INGEST ENTRY POINT — FIXED)
 ===================================================== */
 
 router.post("/admin/deals/bulk", requireAdmin, (req, res) => {
@@ -131,7 +131,6 @@ router.post("/admin/deals/bulk", requireAdmin, (req, res) => {
     return res.status(400).json({ error: "No deals provided" });
   }
 
-  // FORCE country (authoritative)
   const incoming = incomingRaw.map((d) => ({
     ...d,
     country,
@@ -165,23 +164,38 @@ router.put("/admin/deals/:id", requireAdmin, (req, res) => {
 
 /* =====================================================
    ADMIN DELETE — DELETE /admin/deals/:id
+   ✅ US SAFE: deletes from US + CA
 ===================================================== */
 
 router.delete("/admin/deals/:id", requireAdmin, (req, res) => {
-  const country = resolveCountry(req);
+  const requestedCountry = resolveCountry(req);
   const id = normalize(req.params.id);
 
-  const store = ensureStore(readDeals(country));
-  const before = store.deals.length;
+  let deleted = 0;
+  const countriesToCheck =
+    requestedCountry === "US" ? ["US", "CA"] : [requestedCountry];
 
-  store.deals = store.deals.filter((d) => !matchesDeal(d, id));
+  for (const country of countriesToCheck) {
+    const store = ensureStore(readDeals(country));
+    const before = store.deals.length;
 
-  if (store.deals.length === before) {
+    store.deals = store.deals.filter((d) => !matchesDeal(d, id));
+
+    if (store.deals.length !== before) {
+      writeDeals(country, store);
+      deleted += before - store.deals.length;
+    }
+  }
+
+  if (!deleted) {
     return res.status(404).json({ error: "Deal not found" });
   }
 
-  writeDeals(country, store);
-  res.json({ ok: true, country, deleted: before - store.deals.length });
+  res.json({
+    ok: true,
+    deleted,
+    requestedCountry,
+  });
 });
 
 /* =====================================================
