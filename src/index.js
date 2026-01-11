@@ -8,6 +8,7 @@ import dealsRoutes from "./routes/deals.js";
 import redirectRoutes from "./routes/redirect.js";
 import alertsRoutes from "./routes/alerts.js";
 import usersRoutes from "./routes/users.js";
+import adminRoutes from "./routes/admin.js"; // ✅ REQUIRED
 
 const app = express();
 
@@ -31,7 +32,9 @@ app.use(express.json({ limit: "1mb" }));
    (EMAIL VIA HEADER)
 ========================= */
 app.use((req, res, next) => {
-  const email = String(req.headers["x-user-email"] || "").trim().toLowerCase();
+  const email = String(req.headers["x-user-email"] || "")
+    .trim()
+    .toLowerCase();
 
   if (email) {
     req.user = { id: email };
@@ -96,6 +99,7 @@ app.use("/", dealsRoutes);
 app.use("/", redirectRoutes);
 app.use("/", alertsRoutes);
 app.use("/", usersRoutes);
+app.use("/", adminRoutes); // ✅ ADMIN ROUTES LIVE
 
 /* =========================
    ROUTES — /api
@@ -105,6 +109,7 @@ app.use("/api", dealsRoutes);
 app.use("/api", redirectRoutes);
 app.use("/api", alertsRoutes);
 app.use("/api", usersRoutes);
+app.use("/api", adminRoutes); // ✅ ADMIN ROUTES LIVE
 
 /* =========================
    ROUTES — /api/v1
@@ -114,6 +119,7 @@ app.use("/api/v1", dealsRoutes);
 app.use("/api/v1", redirectRoutes);
 app.use("/api/v1", alertsRoutes);
 app.use("/api/v1", usersRoutes);
+app.use("/api/v1", adminRoutes); // ✅ ADMIN ROUTES LIVE
 
 /* =========================
    CORS ERROR HANDLER
