@@ -164,7 +164,6 @@ router.put("/admin/deals/:id", requireAdmin, (req, res) => {
 
 /* =====================================================
    ADMIN DELETE — DELETE /admin/deals/:id
-   ✅ US SAFE: deletes from US + CA
 ===================================================== */
 
 router.delete("/admin/deals/:id", requireAdmin, (req, res) => {
@@ -205,6 +204,24 @@ router.delete("/admin/deals/:id", requireAdmin, (req, res) => {
 router.get("/admin/deals", requireAdmin, (req, res) => {
   const country = resolveCountry(req);
   res.json(readDeals(country));
+});
+
+/* =====================================================
+   ✅ ADMIN PENDING DEALS — GET /admin/deals/pending
+===================================================== */
+
+router.get("/admin/deals/pending", requireAdmin, (req, res) => {
+  const country = resolveCountry(req);
+  const store = ensureStore(readDeals(country));
+
+  const pendingDeals = store.deals.filter(
+    (d) => d.status && d.status !== "approved"
+  );
+
+  res.json({
+    country,
+    deals: pendingDeals,
+  });
 });
 
 /* =====================================================
