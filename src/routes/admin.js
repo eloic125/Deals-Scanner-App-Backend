@@ -163,6 +163,51 @@ router.put("/admin/deals/:id", requireAdmin, (req, res) => {
 });
 
 /* =====================================================
+   ADMIN APPROVE — POST /admin/deals/:id/approve
+===================================================== */
+
+router.post("/admin/deals/:id/approve", requireAdmin, (req, res) => {
+  const country = resolveCountry(req);
+  const id = normalize(req.params.id);
+
+  const store = ensureStore(readDeals(country));
+  const deal = store.deals.find((d) => matchesDeal(d, id));
+
+  if (!deal) {
+    return res.status(404).json({ error: "Deal not found" });
+  }
+
+  deal.status = "approved";
+  deal.updatedAt = new Date().toISOString();
+
+  writeDeals(country, store);
+
+  res.json({ ok: true, country, deal });
+});
+
+/* =====================================================
+   ADMIN REJECT — POST /admin/deals/:id/reject
+===================================================== */
+
+router.post("/admin/deals/:id/reject", requireAdmin, (req, res) => {
+  const country = resolveCountry(req);
+  const id = normalize(req.params.id);
+
+  const store = ensureStore(readDeals(country));
+  const before = store.deals.length;
+
+  store.deals = store.deals.filter((d) => !matchesDeal(d, id));
+
+  if (store.deals.length === before) {
+    return res.status(404).json({ error: "Deal not found" });
+  }
+
+  writeDeals(country, store);
+
+  res.json({ ok: true, country, deleted: true });
+});
+
+/* =====================================================
    ADMIN DELETE — DELETE /admin/deals/:id
 ===================================================== */
 
@@ -207,7 +252,7 @@ router.get("/admin/deals", requireAdmin, (req, res) => {
 });
 
 /* =====================================================
-   ✅ ADMIN PENDING DEALS — GET /admin/deals/pending
+   ADMIN PENDING — GET /admin/deals/pending
 ===================================================== */
 
 router.get("/admin/deals/pending", requireAdmin, (req, res) => {
@@ -218,10 +263,7 @@ router.get("/admin/deals/pending", requireAdmin, (req, res) => {
     (d) => d.status && d.status !== "approved"
   );
 
-  res.json({
-    country,
-    deals: pendingDeals,
-  });
+  res.json({ country, deals: pendingDeals });
 });
 
 /* =====================================================
