@@ -187,6 +187,7 @@ router.post("/admin/deals/:id/approve", requireAdmin, (req, res) => {
 
 /* =====================================================
    ADMIN REJECT — POST /admin/deals/:id/reject
+   ✅ HARD DELETE (so it cannot come back)
 ===================================================== */
 
 router.post("/admin/deals/:id/reject", requireAdmin, (req, res) => {
@@ -253,15 +254,15 @@ router.get("/admin/deals", requireAdmin, (req, res) => {
 
 /* =====================================================
    ADMIN PENDING — GET /admin/deals/pending
+   ✅ ONLY true pending items
 ===================================================== */
 
 router.get("/admin/deals/pending", requireAdmin, (req, res) => {
   const country = resolveCountry(req);
   const store = ensureStore(readDeals(country));
 
-  const pendingDeals = store.deals.filter(
-    (d) => d.status && d.status !== "approved"
-  );
+  // ✅ pending means pending ONLY
+  const pendingDeals = store.deals.filter((d) => d.status === "pending");
 
   res.json({ country, deals: pendingDeals });
 });
