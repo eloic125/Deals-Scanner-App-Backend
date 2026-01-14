@@ -7,7 +7,36 @@ import { getUser } from "../services/userStore.js";
 const router = express.Router();
 
 /* =====================================================
-   GET MY POINTS
+   USERS ROUTES
+   - Auth via x-user-email middleware (req.user)
+   - NO admin key
+   - NO country logic
+===================================================== */
+
+/* =====================================================
+   GET MY FULL PROFILE (POINTS + LEVEL)
+   USED BY PROFILE PAGE
+   GET /users/me
+===================================================== */
+
+router.get("/users/me", (req, res) => {
+  const userId = req.user?.id;
+
+  if (!userId) {
+    return res.status(401).json({ error: "Not authenticated" });
+  }
+
+  const user = getUser(userId);
+
+  return res.json({
+    ok: true,
+    user,
+  });
+});
+
+/* =====================================================
+   GET MY POINTS (LEGACY / BACKWARD COMPAT)
+   GET /users/me/points
 ===================================================== */
 
 router.get("/users/me/points", (req, res) => {
@@ -29,7 +58,7 @@ router.get("/users/me/points", (req, res) => {
 /* =====================================================
    LEADERBOARD — TOP USERS BY POINTS
    - Reads src/data/users.json
-   - Returns users sorted by points DESC
+   - Sorted DESC
    - Default limit=25, max=100
 ===================================================== */
 
@@ -46,17 +75,25 @@ router.get("/leaderboard", (req, res) => {
     const parsed = JSON.parse(raw || "{}");
 
     const usersObj =
-      parsed && typeof parsed === "object" && parsed.users && typeof parsed.users === "object"
+      parsed &&
+      typeof parsed === "object" &&
+      parsed.users &&
+      typeof parsed.users === "object"
         ? parsed.users
         : {};
 
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 25));
 
     const users = Object.entries(usersObj)
-      .map(([id, row]) => ({
-        userId: id,
-        points: Number(row?.points) || 0,
-      }))
+      .map(([id, row]) => {
+        const u = getUser(id); // ensures level logic stays consistent
+        return {
+          userId: id,
+          points: u.points,
+          level: u.level,
+          levelName: u.levelName,
+        };
+      })
       .filter((u) => u.points > 0)
       .sort((a, b) => b.points - a.points)
       .slice(0, limit);
