@@ -1,505 +1,755 @@
-import fs from "fs";
-import path from "path";
+/**
+ * =====================================================
+ * DEALS ROUTES — STRICT COUNTRY FILTER (NO MERGE)
+ * =====================================================
+ *
+ * FINAL BEHAVIOR:
+ * - country=CA  -> READ/WRITE CA FILE ONLY
+ * - country=US  -> READ/WRITE US FILE ONLY
+ * - missing     -> DEFAULT CA
+ *
+ * RULES:
+ * - PUBLIC reads NEVER merge
+ * - ADMIN reads/writes ALWAYS country-specific
+ * - DELETE = soft delete (status="disabled" + expiresAt=now)
+ * - Compatible with country-split dealStore.js
+ *
+ * =====================================================
+ * FIXES FOR “PENDING PAGE EMPTY” (YOUR CURRENT BUG)
+ * =====================================================
+ *
+ * ROOT CAUSE(S) THIS FILE COVERS:
+ *
+ * A) PUBLIC SUBMIT MUST ALWAYS CREATE status="pending"
+ *    - Public POST /deals must NEVER auto-approve based on x-admin-key.
+ *    - Even if some client accidentally sends x-admin-key, we ignore it here.
+ *    - Only admin routes can create approved deals.
+ *
+ * B) PENDING LIST MUST CATCH “MISSING/WEIRD STATUS”
+ *    - Some old submissions may have status missing/blank/unknown.
+ *    - Admin pending endpoint treats unknown/empty as pending (safe).
+ *
+ * C) STRICT COUNTRY RESOLUTION (NO BODY-ONLY DEPENDENCY)
+ *    - query.country -> header x-country -> body.country -> default CA
+ *    - Works for GET/POST/PUT/DELETE (DELETE body often missing)
+ *
+ * D) PUBLIC LIST ALWAYS returns only approved + not expired + not disabled
+ *
+ * NOTE:
+ * - If you also have routes/admin.js defining /admin/deals/* you MUST NOT DUPLICATE.
+ * - Keep ONE source of truth (this file OR admin.js).
+ * =====================================================
+ */
+
+import express from "express";
 import crypto from "node:crypto";
-import { DEALS_FILE } from "../config/paths.js";
+import { readDeals, writeDeals } from "../services/dealStore.js";
+import { classifyDealCategory } from "../services/classifyDealCategory.js";
+import { addUserPoints } from "../services/userStore.js";
+
+const router = express.Router();
 
 /* =====================================================
-   COUNTRY-SPLIT DEAL STORE (US + CA)
-   - Two physically separate JSON files on disk
-   - Same schema per file
-   - Public/admin code selects the file by country
-   - Default country: CA (safe)
-
-   FIX INCLUDED (CRITICAL):
-   - If any caller mistakenly does writeDeals(store) without passing country,
-     and the store clearly contains ONLY US deals, we auto-route that write
-     into the US file instead of silently writing into CA.
-   - This prevents the exact bug you are seeing:
-       ADMIN shows a US deal (because it was stored inside CA with country:"US")
-       but PUBLIC /deals?country=US reads US file -> empty -> 0 deals
+   ADMIN AUTH
 ===================================================== */
 
-/* =====================================================
-   COUNTRY NORMALIZATION
-===================================================== */
+const ADMIN_KEY = process.env.ADMIN_KEY?.trim();
 
-function normalizeCountry(input) {
-  const c = String(input || "").trim().toUpperCase();
-  return c === "US" ? "US" : "CA";
+if (!ADMIN_KEY) {
+  console.error("ADMIN_KEY missing — backend cannot run.");
+  process.exit(1);
 }
 
-/* =====================================================
-   FILE PATHS
-===================================================== */
-
-function buildCountryFile(baseFilePath, country) {
-  // If DEALS_FILE is ".../deals.json" -> ".../deals-US.json" / ".../deals-CA.json"
-  // If DEALS_FILE has no ".json", still works.
-  const c = normalizeCountry(country);
-  const dir = path.dirname(baseFilePath);
-  const ext = path.extname(baseFilePath) || ".json";
-  const base = path.basename(baseFilePath, ext) || "deals";
-  return path.join(dir, `${base}-${c}${ext}`);
-}
-
-function getActiveDealsFile(country) {
-  return buildCountryFile(DEALS_FILE, country);
-}
-
-function getBackupFile(activeFile) {
-  return `${activeFile}.bak`;
-}
-
-/* =====================================================
-   LOGGING
-===================================================== */
-
-console.log("💾 Deal store base file:", DEALS_FILE);
-console.log("💾 Deal store US file:", getActiveDealsFile("US"));
-console.log("💾 Deal store CA file:", getActiveDealsFile("CA"));
-
-/* =====================================================
-   SAFE JSON HELPERS
-===================================================== */
-
-function readDealsCount(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) return 0;
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed.deals) ? parsed.deals.length : 0;
-  } catch {
-    return 0;
+function requireAdmin(req, res) {
+  const key = String(req.headers["x-admin-key"] || "").trim();
+  if (!key || key !== ADMIN_KEY) {
+    res.status(403).json({ error: "Unauthorized" });
+    return false;
   }
+  return true;
 }
 
-function safeReadJson(filePath) {
+/* =====================================================
+   COUNTRY (SINGLE SOURCE OF TRUTH)
+===================================================== */
+
+function normalizeCountry(v) {
+  return String(v || "").trim().toUpperCase() === "US" ? "US" : "CA";
+}
+
+/**
+ * Resolve country from request in a robust way.
+ * Priority:
+ *  1) req.query.country
+ *  2) req.headers["x-country"]
+ *  3) req.body.country (optional)
+ *  4) default "CA"
+ */
+function resolveCountry(req, { allowBody = true } = {}) {
+  if (req.query?.country) return normalizeCountry(req.query.country);
+  if (req.headers?.["x-country"]) return normalizeCountry(req.headers["x-country"]);
+  if (allowBody && req.body?.country) return normalizeCountry(req.body.country);
+  return "CA";
+}
+
+function publicReadCountry(req) {
+  return resolveCountry(req, { allowBody: false });
+}
+
+function publicWriteCountry(req) {
+  return resolveCountry(req, { allowBody: true });
+}
+
+function adminCountry(req) {
+  return resolveCountry(req, { allowBody: true });
+}
+
+/* =====================================================
+   TIME / STRING HELPERS
+===================================================== */
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function str(v) {
+  return String(v || "").trim();
+}
+
+function lower(v) {
+  return String(v || "").trim().toLowerCase();
+}
+
+function toNumOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toNumOrZero(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/* =====================================================
+   STATUS NORMALIZATION (CRITICAL FOR PENDING PAGE)
+===================================================== */
+
+function normalizeStatus(s) {
+  const v = String(s || "").trim().toLowerCase();
+
+  if (v === "approved") return "approved";
+  if (v === "pending") return "pending";
+  if (v === "rejected") return "rejected";
+  if (v === "disabled") return "disabled";
+
+  // SAFETY DEFAULT:
+  // If status is empty/unknown in stored data, treat as pending for admin review
+  // so it shows up and can be approved/rejected.
+  return "pending";
+}
+
+function isApproved(deal) {
+  return normalizeStatus(deal?.status) === "approved";
+}
+
+function isDisabled(deal) {
+  return normalizeStatus(deal?.status) === "disabled";
+}
+
+function isPending(deal) {
+  return normalizeStatus(deal?.status) === "pending";
+}
+
+function isRejected(deal) {
+  return normalizeStatus(deal?.status) === "rejected";
+}
+
+/* =====================================================
+   EXPIRY HELPERS
+===================================================== */
+
+function isExpired(deal, nowMs) {
+  if (!deal?.expiresAt) return false;
+  const t = new Date(deal.expiresAt).getTime();
+  return Number.isFinite(t) ? t <= nowMs : false;
+}
+
+/* =====================================================
+   STORE SHAPE GUARDS
+===================================================== */
+
+function ensureStore(store) {
+  const s = store && typeof store === "object" ? store : {};
+  if (!Array.isArray(s.deals)) s.deals = [];
+  if (!Array.isArray(s.reports)) s.reports = [];
+  if (!Array.isArray(s.alerts)) s.alerts = [];
+  if (!s.updatedAt) s.updatedAt = nowIso();
+  return s;
+}
+
+function ensureReports(store) {
+  const s = ensureStore(store);
+  if (!Array.isArray(s.reports)) s.reports = [];
+  return s;
+}
+
+function ensureAlerts(store) {
+  const s = ensureStore(store);
+  if (!Array.isArray(s.alerts)) s.alerts = [];
+  return s;
+}
+
+/* =====================================================
+   URL NORMALIZATION
+===================================================== */
+
+function normalizeAmazonUrl(inputUrl) {
   try {
-    if (!fs.existsSync(filePath)) return null;
-    const raw = fs.readFileSync(filePath, "utf8");
-    if (!raw || !String(raw).trim()) return null;
-    return JSON.parse(raw);
+    const url = String(inputUrl || "").trim();
+    if (!url) return null;
+
+    const u = new URL(url.startsWith("http") ? url : `https://${url}`);
+    const host = u.hostname.toLowerCase();
+
+    // Non-amazon: strip tracking
+    if (!host.includes("amazon.")) {
+      u.search = "";
+      u.hash = "";
+      return u.toString();
+    }
+
+    const match =
+      u.pathname.match(/\/dp\/([A-Z0-9]{10})/i) ||
+      u.pathname.match(/\/gp\/product\/([A-Z0-9]{10})/i);
+
+    const asin = match?.[1]?.toUpperCase();
+    if (!asin) return u.toString();
+
+    const marketplace = host.includes("amazon.ca") ? "www.amazon.ca" : "www.amazon.com";
+    const tag = u.searchParams.get("tag");
+
+    const out = new URL(`https://${marketplace}/dp/${asin}`);
+    if (tag) out.searchParams.set("tag", tag);
+
+    return out.toString();
   } catch {
     return null;
   }
 }
 
-function safeWriteJson(filePath, obj) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(obj, null, 2));
-}
-
-function hasDealsData(obj) {
-  return !!obj && Array.isArray(obj.deals) && obj.deals.length > 0;
-}
-
-/* =====================================================
-   AUTO-MIGRATION (SINGLE FILE -> CA FILE)
-   - Migrates legacy single-store deals into CA ONLY
-===================================================== */
-
-function migrateSingleStoreToCA() {
+function normalizeGenericUrl(inputUrl) {
   try {
-    const CA_FILE = getActiveDealsFile("CA");
-    const CA_EXISTS = fs.existsSync(CA_FILE);
-    const CA_COUNT = CA_EXISTS ? readDealsCount(CA_FILE) : 0;
-
-    const CANDIDATES = [
-      DEALS_FILE,
-      path.join(process.cwd(), "src", "data", "deals.json"),
-      path.join(process.cwd(), "src", "src", "data", "deals.json"),
-    ];
-
-    console.log("🔍 Checking migration candidates:", CANDIDATES);
-
-    let source = null;
-    let sourceCount = 0;
-
-    for (const f of CANDIDATES) {
-      if (!fs.existsSync(f)) continue;
-      const cnt = readDealsCount(f);
-      if (cnt > 0) {
-        source = f;
-        sourceCount = cnt;
-        break;
-      }
-    }
-
-    if (!source) {
-      console.log("⚠️ Migration skipped: no source file with deals found.");
-      return;
-    }
-
-    if (!CA_EXISTS || CA_COUNT === 0) {
-      const parsed = safeReadJson(source);
-
-      if (!parsed || !hasDealsData(parsed)) {
-        console.log("⚠️ Migration skipped: source parse failed or has no deals.");
-        return;
-      }
-
-      const out = {
-        updatedAt: new Date().toISOString(),
-        deals: Array.isArray(parsed.deals) ? parsed.deals : [],
-        reports: Array.isArray(parsed.reports) ? parsed.reports : [],
-        alerts: Array.isArray(parsed.alerts) ? parsed.alerts : [],
-      };
-
-      // Do NOT rewrite deal.country here.
-      safeWriteJson(CA_FILE, out);
-
-      console.log("✨ Migrated single-store deals into CA file:", {
-        from: source,
-        to: CA_FILE,
-        sourceCount,
-        previousCACount: CA_COUNT,
-        newCACount: out.deals.length,
-      });
-    } else {
-      console.log("⚠️ Migration skipped confirm:", {
-        caFileExists: CA_EXISTS,
-        caCount: CA_COUNT,
-        foundSource: source,
-        sourceCount,
-      });
-    }
-  } catch (err) {
-    console.warn("Migration failed:", err?.message || err);
-  }
-}
-
-migrateSingleStoreToCA();
-
-/* =====================================================
-   FILE INIT (PER COUNTRY)
-===================================================== */
-
-function ensureStore(country = "CA") {
-  const c = normalizeCountry(country);
-  const ACTIVE_DEALS_FILE = getActiveDealsFile(c);
-
-  const dir = path.dirname(ACTIVE_DEALS_FILE);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  if (!fs.existsSync(ACTIVE_DEALS_FILE)) {
-    fs.writeFileSync(
-      ACTIVE_DEALS_FILE,
-      JSON.stringify(
-        {
-          updatedAt: new Date().toISOString(),
-          deals: [],
-          reports: [],
-          alerts: [],
-        },
-        null,
-        2
-      )
-    );
-  }
-}
-
-// Make sure BOTH files exist on boot (prevents “empty US file never created” confusion)
-ensureStore("CA");
-ensureStore("US");
-
-/* =====================================================
-   STRING/URL HELPERS
-===================================================== */
-
-function normalize(str) {
-  return String(str || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
-}
-
-function normalizeUrl(url) {
-  try {
-    const u = new URL(url);
-    u.search = "";
+    const url = String(inputUrl || "").trim();
+    if (!url) return null;
+    const u = new URL(url.startsWith("http") ? url : `https://${url}`);
+    // strip fragment only; keep query for affiliate links (except amazon which we normalize separately)
     u.hash = "";
-    return u.toString().toLowerCase();
+    return u.toString();
   } catch {
     return null;
   }
 }
 
 /* =====================================================
-   UNIQUE DEAL KEY
+   FIND DEAL (STRICT ID MATCH)
 ===================================================== */
 
-export function getDealKey(deal) {
-  if (!deal) return null;
+function findDealById(store, id) {
+  const deals = Array.isArray(store?.deals) ? store.deals : [];
+  return deals.find((d) => String(d?.id || "").trim() === String(id || "").trim()) || null;
+}
 
-  if (deal.sourceKey) return `source:${deal.sourceKey}`;
-  if (deal.asin) return `asin:${deal.asin}`;
-
-  const u = normalizeUrl(deal.url);
-  if (u) return `url:${u}`;
-
-  if (deal.title) return `title:${normalize(deal.title)}`;
-
-  return crypto.createHash("sha1").update(JSON.stringify(deal)).digest("hex");
+function findDealIndexById(store, id) {
+  const deals = Array.isArray(store?.deals) ? store.deals : [];
+  return deals.findIndex((d) => String(d?.id || "").trim() === String(id || "").trim());
 }
 
 /* =====================================================
-   INTERNAL BACKUP (PER COUNTRY)
+   PUBLIC — LIST DEALS
+   GET /deals?country=CA|US
 ===================================================== */
 
-function backupCurrentFile(activeFile) {
-  try {
-    const backupFile = getBackupFile(activeFile);
-    if (fs.existsSync(activeFile)) {
-      fs.copyFileSync(activeFile, backupFile);
-      console.log("📦 Backup created:", backupFile);
-    }
-  } catch (err) {
-    console.warn("Backup failed:", err?.message || err);
-  }
-}
+router.get("/deals", (req, res) => {
+  const { category, sort, maxPrice, discount } = req.query;
 
-/* =====================================================
-   READ (DEFAULT CA)
-===================================================== */
+  const country = publicReadCountry(req);
+  const store = ensureStore(readDeals(country));
+  const nowMs = Date.now();
 
-export function readDeals(country = "CA") {
-  const c = normalizeCountry(country);
-  const ACTIVE_DEALS_FILE = getActiveDealsFile(c);
+  let deals = Array.isArray(store.deals) ? [...store.deals] : [];
 
-  ensureStore(c);
-
-  try {
-    const raw = fs.readFileSync(ACTIVE_DEALS_FILE, "utf8");
-    const parsed = JSON.parse(raw);
-
-    return {
-      updatedAt: parsed.updatedAt || new Date().toISOString(),
-      deals: Array.isArray(parsed.deals) ? parsed.deals : [],
-      reports: Array.isArray(parsed.reports) ? parsed.reports : [],
-      alerts: Array.isArray(parsed.alerts) ? parsed.alerts : [],
-    };
-  } catch (err) {
-    console.error("readDeals failed:", err);
-
-    return {
-      updatedAt: new Date().toISOString(),
-      deals: [],
-      reports: [],
-      alerts: [],
-    };
-  }
-}
-
-/* =====================================================
-   WRITE — PROTECTED (DEFAULT CA)
-
-   IMPORTANT FIX:
-   Some callers accidentally do writeDeals(store) (no country).
-   If that "store" clearly contains ONLY US deals, we auto-route
-   the write to US to avoid “US deals stored in CA file”.
-
-   Supported:
-     writeDeals(input) -> inferred if possible, else CA
-     writeDeals(country, input) -> explicit
-===================================================== */
-
-function extractDealsArray(input) {
-  if (Array.isArray(input)) return input;
-  if (input && typeof input === "object" && Array.isArray(input.deals)) return input.deals;
-  return null;
-}
-
-function inferCountryFromInput(input) {
-  // 1) If caller provided a top-level country
-  if (input && typeof input === "object" && input.country) {
-    return normalizeCountry(input.country);
-  }
-
-  const deals = extractDealsArray(input);
-  if (!deals || deals.length === 0) return null;
-
-  // 2) Infer from deal.country values
-  let hasUS = false;
-  let hasCA = false;
-
-  for (const d of deals) {
-    const c = String(d?.country || "").trim().toUpperCase();
-    if (c === "US") hasUS = true;
-    else if (c === "CA") hasCA = true;
-    else {
-      // missing/unknown counts as CA-side legacy
-      hasCA = true;
-    }
-    if (hasUS && hasCA) break;
-  }
-
-  // If it's clearly ONLY US, treat as US.
-  if (hasUS && !hasCA) return "US";
-
-  // If mixed or only CA/legacy, do not infer (stay CA default).
-  return null;
-}
-
-function parseWriteArgs(a, b) {
-  // Supports:
-  //   writeDeals(input)
-  //   writeDeals(country, input)
-  if (typeof a === "string" && b !== undefined) {
-    return { country: normalizeCountry(a), input: b, inferred: false };
-  }
-
-  // No explicit country: attempt to infer safely.
-  const inferred = inferCountryFromInput(a);
-  if (inferred === "US") {
-    return { country: "US", input: a, inferred: true };
-  }
-
-  return { country: "CA", input: a, inferred: false };
-}
-
-export function writeDeals(a, b) {
-  const { country, input, inferred } = parseWriteArgs(a, b);
-
-  const c = normalizeCountry(country);
-  const ACTIVE_DEALS_FILE = getActiveDealsFile(c);
-
-  ensureStore(c);
-
-  const current = readDeals(c);
-  const currentDeals = Array.isArray(current.deals) ? current.deals : [];
-  const currentReports = Array.isArray(current.reports) ? current.reports : [];
-  const currentAlerts = Array.isArray(current.alerts) ? current.alerts : [];
-
-  let deals = [];
-  let reports = currentReports;
-  let alerts = currentAlerts;
-
-  if (Array.isArray(input)) {
-    deals = input;
-  } else if (input && typeof input === "object") {
-    deals = Array.isArray(input.deals) ? input.deals : [];
-    reports = Array.isArray(input.reports) ? input.reports : currentReports;
-    alerts = Array.isArray(input.alerts) ? input.alerts : currentAlerts;
-  } else {
-    console.error("writeDeals: invalid input ignored");
-    return;
-  }
-
-  // Protection: never wipe a non-empty store with empty deals
-  if (currentDeals.length > 0 && deals.length === 0) {
-    console.warn(
-      "⚠️ writeDeals blocked — attempted to overwrite non-empty store with empty deals.",
-      { country: c, file: ACTIVE_DEALS_FILE }
-    );
-    return;
-  }
-
-  if (inferred) {
-    console.log("🧠 writeDeals: inferred country from input ->", c);
-  }
-
-  backupCurrentFile(ACTIVE_DEALS_FILE);
-
-  fs.writeFileSync(
-    ACTIVE_DEALS_FILE,
-    JSON.stringify(
-      {
-        updatedAt: new Date().toISOString(),
-        deals,
-        reports,
-        alerts,
-      },
-      null,
-      2
-    )
-  );
-}
-
-/* =====================================================
-   UPSERT (DEFAULT CA)
-===================================================== */
-
-function parseUpsertArgs(a, b) {
-  // Supports:
-  //   upsertDeals(incoming)
-  //   upsertDeals(country, incoming)
-  if (typeof a === "string" && b !== undefined) {
-    return { country: normalizeCountry(a), incoming: b };
-  }
-  return { country: "CA", incoming: a };
-}
-
-export function upsertDeals(a, b) {
-  const { country, incoming } = parseUpsertArgs(a, b);
-
-  if (!Array.isArray(incoming)) {
-    throw new Error("upsertDeals expects an array");
-  }
-
-  const c = normalizeCountry(country);
-
-  const store = readDeals(c);
-  const existing = Array.isArray(store.deals) ? store.deals : [];
-  const map = new Map();
-
-  for (const d of existing) {
-    map.set(getDealKey(d), d);
-  }
-
-  let addedCount = 0;
-  let updatedCount = 0;
-
-  for (const raw of incoming) {
-    if (!raw) continue;
-
-    const key = getDealKey(raw);
-    if (!key) continue;
-
-    const now = new Date().toISOString();
-
-    if (map.has(key)) {
-      const current = map.get(key);
-
-      map.set(key, {
-        ...current,
-        ...raw,
-        id: current.id,
-        status: current.status || "approved",
-        updatedAt: now,
-      });
-
-      updatedCount++;
-    } else {
-      map.set(key, {
-        id: crypto.randomUUID(),
-        status: raw.status || "approved",
-        expiresAt: raw.expiresAt || null,
-        createdAt: now,
-        updatedAt: now,
-        ...raw,
-      });
-
-      addedCount++;
-    }
-  }
-
-  const merged = Array.from(map.values());
-
-  writeDeals(c, {
-    deals: merged,
-    reports: store.reports || [],
-    alerts: store.alerts || [],
+  // PUBLIC shows ONLY approved, not expired, not disabled
+  deals = deals.filter((d) => {
+    if (!isApproved(d)) return false;
+    if (isDisabled(d)) return false;
+    if (isExpired(d, nowMs)) return false;
+    return true;
   });
 
-  return { ok: true, addedCount, updatedCount, total: merged.length };
-}
+  // Category filter
+  if (category && String(category) !== "All") {
+    const want = lower(category);
+    deals = deals.filter((d) => lower(d?.category) === want);
+  }
+
+  // Max price filter
+  if (maxPrice !== undefined && maxPrice !== null && String(maxPrice).trim() !== "") {
+    const mp = Number(maxPrice);
+    if (Number.isFinite(mp)) {
+      deals = deals.filter((d) => Number(d.price) <= mp);
+    }
+  }
+
+  // Discount filter
+  if (discount !== undefined && discount !== null && String(discount).trim() !== "") {
+    const min = Number(discount);
+    if (Number.isFinite(min)) {
+      deals = deals.filter((d) => {
+        const p = Number(d.price);
+        const op = Number(d.originalPrice);
+        if (!op || !p || op <= 0) return false;
+        return Math.round(((op - p) / op) * 100) >= min;
+      });
+    }
+  }
+
+  // Sorting
+  if (sort === "newest") {
+    deals.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  } else if (sort === "trending") {
+    deals.sort((a, b) => (b.clicks || 0) - (a.clicks || 0));
+  }
+
+  res.json({
+    country,
+    updatedAt: store.updatedAt || nowIso(),
+    count: deals.length,
+    deals,
+  });
+});
 
 /* =====================================================
-   RESET (disabled)
+   PUBLIC — DEAL DETAILS
+   GET /deals/:id
 ===================================================== */
 
-export function resetDeals() {
-  console.warn("⚠️ resetDeals called — NOT allowed in production.");
-  return { ok: false, message: "Reset disabled in production." };
-}
+router.get("/deals/:id", (req, res) => {
+  const country = publicReadCountry(req);
+  const store = ensureStore(readDeals(country));
+  const deal = findDealById(store, req.params.id);
+
+  if (!deal) return res.status(404).json({ error: "Deal not found" });
+
+  const nowMs = Date.now();
+  if (!isApproved(deal)) return res.status(404).json({ error: "Deal not found" });
+  if (isDisabled(deal)) return res.status(404).json({ error: "Deal not found" });
+  if (isExpired(deal, nowMs)) return res.status(404).json({ error: "Deal not found" });
+
+  res.json(deal);
+});
+
+/* =====================================================
+   PUBLIC — CLICK TRACKING
+   POST /deals/:id/click
+===================================================== */
+
+router.post("/deals/:id/click", (req, res) => {
+  const country = publicWriteCountry(req);
+  const store = ensureStore(readDeals(country));
+
+  const deal = findDealById(store, req.params.id);
+  if (!deal) return res.status(404).json({ error: "Deal not found" });
+
+  const nowMs = Date.now();
+  if (!isApproved(deal) || isDisabled(deal) || isExpired(deal, nowMs)) {
+    return res.status(400).json({ error: "Deal not active" });
+  }
+
+  deal.clicks = toNumOrZero(deal.clicks) + 1;
+  deal.updatedAt = nowIso();
+
+  store.updatedAt = nowIso();
+  writeDeals(country, store);
+
+  res.json({ ok: true, country, id: deal.id, clicks: deal.clicks });
+});
+
+/* =====================================================
+   USER — SUBMIT DEAL
+   POST /deals
+   CRITICAL: ALWAYS PENDING
+===================================================== */
+
+router.post("/deals", async (req, res) => {
+  const body = req.body || {};
+  const country = publicWriteCountry(req);
+  const store = ensureStore(readDeals(country));
+  const ts = nowIso();
+
+  // Basic required fields
+  const title = str(body.title);
+  const price = toNumOrNull(body.price);
+
+  if (!title) return res.status(400).json({ error: "title and price are required" });
+  if (!Number.isFinite(price)) return res.status(400).json({ error: "title and price are required" });
+
+  // URL required
+  // - If amazon -> normalize to canonical /dp/ASIN
+  // - Else -> keep (strip hash)
+  let url = null;
+  const rawUrl = str(body.url);
+
+  if (rawUrl) {
+    url = normalizeAmazonUrl(rawUrl) || normalizeGenericUrl(rawUrl) || rawUrl;
+  }
+  if (!url) return res.status(400).json({ error: "url is required" });
+
+  // Category
+  let category = str(body.category) || "Other";
+  try {
+    if (!body.category) {
+      category =
+        (await classifyDealCategory({
+          title,
+          description: str(body.notes || body.description || ""),
+        })) || "Other";
+      category = str(category) || "Other";
+    }
+  } catch {
+    category = category || "Other";
+  }
+
+  // IMPORTANT:
+  // Public submissions must ALWAYS be pending.
+  // Ignore any incoming body.status, and ignore any x-admin-key header here.
+  const deal = {
+    id: crypto.randomUUID(),
+    title,
+    price: Number(price),
+    originalPrice: toNumOrNull(body.originalPrice),
+    retailer: str(body.retailer) || "Amazon",
+    category,
+    imageUrl: str(body.imageUrl) || null,
+    notes: str(body.notes) || null,
+    url,
+    status: "pending",
+    country,
+    createdAt: ts,
+    updatedAt: ts,
+    expiresAt: null,
+    clicks: 0,
+    createdByUserId: req.user?.id || null,
+    pointsAwarded: false,
+    pointsAwardedAt: null,
+    pointsAwardedAmount: null,
+  };
+
+  store.deals.unshift(deal);
+  store.updatedAt = ts;
+  writeDeals(country, store);
+
+  res.status(201).json({ ok: true, pending: true, country, deal });
+});
+
+/* =====================================================
+   USER — REPORT DEAL
+   POST /deals/:id/report
+===================================================== */
+
+router.post("/deals/:id/report", (req, res) => {
+  const country = publicWriteCountry(req);
+  const store = ensureReports(readDeals(country));
+
+  const deal = findDealById(store, req.params.id);
+  if (!deal) return res.status(404).json({ error: "Deal not found" });
+
+  const reason = str(req.body?.reason);
+  if (!reason) return res.status(400).json({ error: "reason is required" });
+
+  const report = {
+    id: crypto.randomUUID(),
+    deal_id: deal.id,
+    dealId: deal.id,
+    reason,
+    notes: req.body?.notes ? String(req.body.notes) : null,
+    userId: req.user?.id || null,
+    status: "pending",
+    user_seen: false,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  };
+
+  store.reports.unshift(report);
+  store.updatedAt = nowIso();
+  writeDeals(country, store);
+
+  res.json({ ok: true, country, report });
+});
+
+/* =====================================================
+   ADMIN — LIST ALL
+   GET /admin/deals?country=US|CA
+===================================================== */
+
+router.get("/admin/deals", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const country = adminCountry(req);
+  const store = ensureStore(readDeals(country));
+
+  // Normalize statuses on the fly (does NOT rewrite file)
+  const deals = Array.isArray(store.deals) ? store.deals.map((d) => ({ ...d, status: normalizeStatus(d?.status) })) : [];
+
+  res.json({
+    country,
+    updatedAt: store.updatedAt || nowIso(),
+    deals,
+    reports: Array.isArray(store.reports) ? store.reports : [],
+    alerts: Array.isArray(store.alerts) ? store.alerts : [],
+  });
+});
+
+/* =====================================================
+   ADMIN — PENDING ONLY
+   GET /admin/deals/pending?country=US|CA
+   CRITICAL: Treat empty/unknown status as pending
+===================================================== */
+
+router.get("/admin/deals/pending", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const country = adminCountry(req);
+  const store = ensureStore(readDeals(country));
+
+  const pendingDeals = (Array.isArray(store.deals) ? store.deals : [])
+    .map((d) => ({ ...d, status: normalizeStatus(d?.status) }))
+    .filter((d) => normalizeStatus(d?.status) === "pending");
+
+  res.json({
+    country,
+    count: pendingDeals.length,
+    deals: pendingDeals,
+  });
+});
+
+/* =====================================================
+   ADMIN — CREATE APPROVED DEAL
+   POST /admin/deals
+===================================================== */
+
+router.post("/admin/deals", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const body = req.body || {};
+  const country = normalizeCountry(body.country);
+  const store = ensureStore(readDeals(country));
+  const ts = nowIso();
+
+  const title = str(body.title);
+  const price = toNumOrNull(body.price);
+
+  if (!title || !Number.isFinite(price)) {
+    return res.status(400).json({ error: "title and price required" });
+  }
+
+  const rawUrl = str(body.url);
+  const url = normalizeAmazonUrl(rawUrl) || normalizeGenericUrl(rawUrl) || rawUrl || null;
+  if (!url) return res.status(400).json({ error: "url is required" });
+
+  let category = str(body.category) || "Other";
+  try {
+    if (!body.category) {
+      category =
+        (await classifyDealCategory({
+          title,
+          description: str(body.notes || ""),
+        })) || "Other";
+      category = str(category) || "Other";
+    }
+  } catch {
+    category = category || "Other";
+  }
+
+  const deal = {
+    id: crypto.randomUUID(),
+    title,
+    price: Number(price),
+    originalPrice: toNumOrNull(body.originalPrice),
+    retailer: str(body.retailer) || "Amazon",
+    category,
+    imageUrl: str(body.imageUrl) || null,
+    notes: str(body.notes) || null,
+    url,
+    status: "approved",
+    country,
+    createdAt: ts,
+    updatedAt: ts,
+    expiresAt: null,
+    clicks: 0,
+    createdByUserId: null,
+    pointsAwarded: false,
+    pointsAwardedAt: null,
+    pointsAwardedAmount: null,
+  };
+
+  store.deals.unshift(deal);
+  store.updatedAt = ts;
+  writeDeals(country, store);
+
+  res.status(201).json({ ok: true, country, deal });
+});
+
+/* =====================================================
+   ADMIN — APPROVE PENDING
+   POST /admin/deals/:id/approve
+===================================================== */
+
+router.post("/admin/deals/:id/approve", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const country = adminCountry(req);
+  const store = ensureStore(readDeals(country));
+
+  const deal = findDealById(store, req.params.id);
+  if (!deal) return res.status(404).json({ error: "Deal not found" });
+
+  // normalize first so weird/blank statuses still approve correctly
+  deal.status = "approved";
+  deal.updatedAt = nowIso();
+  deal.expiresAt = null;
+
+  // Award points once
+  const POINTS = 25;
+  if (deal.createdByUserId && !deal.pointsAwarded) {
+    const r = addUserPoints(deal.createdByUserId, POINTS);
+    if (r?.ok) {
+      deal.pointsAwarded = true;
+      deal.pointsAwardedAt = nowIso();
+      deal.pointsAwardedAmount = POINTS;
+    }
+  }
+
+  store.updatedAt = nowIso();
+  writeDeals(country, store);
+
+  res.json({ ok: true, country, deal: { ...deal, status: normalizeStatus(deal.status) } });
+});
+
+/* =====================================================
+   ADMIN — REJECT (REMOVE FROM STORE)
+   POST /admin/deals/:id/reject
+   NOTE: This matches your “reject deletes pending deal”
+===================================================== */
+
+router.post("/admin/deals/:id/reject", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const country = adminCountry(req);
+  const store = ensureStore(readDeals(country));
+  const id = str(req.params.id);
+
+  const before = Array.isArray(store.deals) ? store.deals.length : 0;
+
+  store.deals = (Array.isArray(store.deals) ? store.deals : []).filter(
+    (d) => String(d?.id || "").trim() !== id
+  );
+
+  if (store.deals.length === before) {
+    return res.status(404).json({ error: "Deal not found" });
+  }
+
+  store.updatedAt = nowIso();
+  writeDeals(country, store);
+
+  res.json({ ok: true, country, deleted: true, id });
+});
+
+/* =====================================================
+   ADMIN — UPDATE
+   PUT /admin/deals/:id
+===================================================== */
+
+router.put("/admin/deals/:id", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const country = adminCountry(req);
+  const store = ensureAlerts(readDeals(country));
+
+  const idx = findDealIndexById(store, req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Deal not found" });
+
+  const existing = store.deals[idx];
+  const oldPrice = Number(existing?.price);
+
+  const patch = req.body || {};
+  const next = {
+    ...existing,
+    ...patch,
+    country, // force country consistency
+    status: normalizeStatus(patch.status ?? existing.status),
+    updatedAt: nowIso(),
+  };
+
+  if (patch.url) {
+    const rawUrl = str(patch.url);
+    next.url = normalizeAmazonUrl(rawUrl) || normalizeGenericUrl(rawUrl) || rawUrl || null;
+  }
+
+  // If admin sets disabled, stamp expiresAt
+  if (normalizeStatus(next.status) === "disabled") {
+    next.expiresAt = nowIso();
+  }
+
+  // Price-drop triggers for alerts (if you use backend alerts)
+  const newPrice = Number(next.price);
+  if (Number.isFinite(oldPrice) && Number.isFinite(newPrice) && newPrice !== oldPrice) {
+    const ts = nowIso();
+    store.alerts = Array.isArray(store.alerts)
+      ? store.alerts.map((a) => {
+          if (
+            a &&
+            !a.triggeredAt &&
+            (a.dealId === next.id || a.deal_id === next.id) &&
+            typeof a.targetPrice === "number" &&
+            newPrice <= a.targetPrice
+          ) {
+            return { ...a, triggeredAt: ts, active: false };
+          }
+          return a;
+        })
+      : [];
+  }
+
+  store.deals[idx] = next;
+  store.updatedAt = nowIso();
+  writeDeals(country, store);
+
+  res.json({ ok: true, country, deal: next });
+});
+
+/* =====================================================
+   ADMIN — DELETE (SOFT DELETE)
+   DELETE /admin/deals/:id?country=US|CA
+===================================================== */
+
+router.delete("/admin/deals/:id", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const country = adminCountry(req);
+  const store = ensureStore(readDeals(country));
+
+  const deal = findDealById(store, req.params.id);
+  if (!deal) return res.status(404).json({ error: "Deal not found" });
+
+  deal.status = "disabled";
+  deal.expiresAt = nowIso();
+  deal.updatedAt = nowIso();
+
+  store.updatedAt = nowIso();
+  writeDeals(country, store);
+
+  res.json({ ok: true, country, id: deal.id });
+});
+
+export default router;
