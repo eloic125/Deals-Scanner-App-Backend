@@ -16,8 +16,8 @@
  *
  * FIXES APPLIED (CRITICAL):
  * 1) USER SUBMIT ALWAYS PENDING:
- *    - Public POST /deals must NEVER auto-approve based on x-admin-key.
- *    - Prevents "pending page empty" even when frontend accidentally sends x-admin-key.
+ *    - Public POST /deals must ALWAYS write status="pending"
+ *    - NEVER auto-approve based on x-admin-key (frontend can accidentally send it)
  *
  * 2) ADMIN PENDING:
  *    - GET /admin/deals/pending returns ONLY status === "pending"
@@ -26,20 +26,18 @@
  *    - Approve sets status="approved" and awards points once (if createdByUserId exists)
  *
  * 4) ADMIN REJECT:
- *    - Reject removes the deal from store entirely (so it never "comes back")
- *      (This matches your requirement: "reject deletes pending deal".)
+ *    - Reject REMOVES the deal from store entirely (so it never "comes back")
  *
  * 5) STRICT COUNTRY RESOLUTION:
  *    - query.country -> header x-country -> body.country -> default CA
  *    - Works for GET/POST/PUT/DELETE (body may be missing on DELETE)
  *
  * 6) PUBLIC LIST:
- *    - returns only approved + not expired
+ *    - returns only approved + not expired + not disabled
  *
- * NOTE:
- * - This file intentionally includes admin endpoints as you pasted them here.
- * - If you also have a separate routes/admin.js, do NOT duplicate endpoints across files.
- *   Use ONE source of truth. (But you asked full edited script here, so it’s all included.)
+ * IMPORTANT:
+ * - If you ALSO have routes/admin.js with deal endpoints, REMOVE/disable those endpoints.
+ *   Do NOT duplicate /admin/deals* across multiple route files.
  *
  * =====================================================
  */
@@ -77,19 +75,16 @@ function requireAdmin(req, res) {
 ========================= */
 
 function normalizeCountry(v) {
-  return String(v || "")
-    .trim()
-    .toUpperCase() === "US"
-    ? "US"
-    : "CA";
+  return String(v || "").trim().toUpperCase() === "US" ? "US" : "CA";
 }
 
 /**
- * Resolve country from request in a robust way.
- * Priority is designed to work with:
- * - GET (query usually present OR header used by app)
- * - POST/PUT (body sometimes present)
- * - DELETE (body often missing)
+ * Resolve country from request robustly.
+ * Order:
+ * 1) req.query.country
+ * 2) req.headers["x-country"]
+ * 3) req.body.country (optional)
+ * 4) default "CA"
  */
 function resolveCountry(req, { allowBody = true } = {}) {
   if (req.query?.country) return normalizeCountry(req.query.country);
@@ -98,27 +93,14 @@ function resolveCountry(req, { allowBody = true } = {}) {
   return "CA";
 }
 
-/**
- * PUBLIC READ COUNTRY
- * - Strict single country
- * - Uses query first, but supports header fallback for app/webview
- */
 function publicReadCountry(req) {
   return resolveCountry(req, { allowBody: false });
 }
 
-/**
- * PUBLIC WRITE COUNTRY
- * - For POST/report/click where body may or may not include country
- */
 function publicWriteCountry(req) {
   return resolveCountry(req, { allowBody: true });
 }
 
-/**
- * ADMIN COUNTRY
- * - Must work for DELETE (no body)
- */
 function adminCountry(req) {
   return resolveCountry(req, { allowBody: true });
 }
@@ -156,8 +138,24 @@ function isExpired(deal, nowMs) {
   return Number.isFinite(t) ? t <= nowMs : false;
 }
 
+function statusOf(deal) {
+  return String(deal?.status || "").trim();
+}
+
 function isApproved(deal) {
-  return String(deal?.status || "").trim() === "approved";
+  return statusOf(deal) === "approved";
+}
+
+function isDisabled(deal) {
+  return statusOf(deal) === "disabled";
+}
+
+function isRejected(deal) {
+  return statusOf(deal) === "rejected";
+}
+
+function isPending(deal) {
+  return statusOf(deal) === "pending";
 }
 
 function ensureStore(store) {
@@ -221,23 +219,18 @@ function normalizeAmazonUrl(inputUrl) {
 
 /* =========================
    FIND DEAL (ID ONLY)
-   (STRICT, predictable)
 ========================= */
 
 function findDealById(store, id) {
   const deals = Array.isArray(store?.deals) ? store.deals : [];
-  return (
-    deals.find(
-      (d) => String(d?.id || "").trim() === String(id || "").trim()
-    ) || null
-  );
+  const needle = str(id);
+  return deals.find((d) => str(d?.id) === needle) || null;
 }
 
 function findDealIndexById(store, id) {
   const deals = Array.isArray(store?.deals) ? store.deals : [];
-  return deals.findIndex(
-    (d) => String(d?.id || "").trim() === String(id || "").trim()
-  );
+  const needle = str(id);
+  return deals.findIndex((d) => str(d?.id) === needle);
 }
 
 /* =========================
@@ -253,9 +246,10 @@ router.get("/deals", (req, res) => {
 
   let deals = Array.isArray(store.deals) ? [...store.deals] : [];
 
-  // PUBLIC shows approved + not expired only
+  // PUBLIC shows approved + not expired + not disabled only
   deals = deals.filter((d) => {
     if (!isApproved(d)) return false;
+    if (isDisabled(d)) return false;
     if (isExpired(d, nowMs)) return false;
     return true;
   });
@@ -316,6 +310,7 @@ router.get("/deals/:id", (req, res) => {
   // Public-only constraints
   const nowMs = Date.now();
   if (!isApproved(deal)) return res.status(404).json({ error: "Deal not found" });
+  if (isDisabled(deal)) return res.status(404).json({ error: "Deal not found" });
   if (isExpired(deal, nowMs)) return res.status(404).json({ error: "Deal not found" });
 
   res.json(deal);
@@ -326,16 +321,14 @@ router.get("/deals/:id", (req, res) => {
 ========================= */
 
 router.post("/deals/:id/click", (req, res) => {
-  // IMPORTANT: click requests often have no body; use header/query too.
   const country = publicWriteCountry(req);
   const store = ensureStore(readDeals(country));
 
   const deal = findDealById(store, req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
 
-  // Only count clicks on active approved deals
   const nowMs = Date.now();
-  if (!isApproved(deal) || isExpired(deal, nowMs)) {
+  if (!isApproved(deal) || isDisabled(deal) || isExpired(deal, nowMs)) {
     return res.status(400).json({ error: "Deal not active" });
   }
 
@@ -380,9 +373,7 @@ router.post("/deals", async (req, res) => {
     }
   } catch {}
 
-  // ✅ CRITICAL FIX:
-  // Public submissions MUST always be pending.
-  // Never auto-approve based on x-admin-key (frontend may accidentally send it).
+  // ✅ CRITICAL: ALWAYS pending (never auto-approve)
   const deal = {
     id: crypto.randomUUID(),
     title,
@@ -393,7 +384,7 @@ router.post("/deals", async (req, res) => {
     imageUrl: str(body.imageUrl) || null,
     notes: str(body.notes) || null,
     url,
-    status: "pending", // ✅ ALWAYS pending
+    status: "pending",
     country,
     createdAt: ts,
     updatedAt: ts,
@@ -417,7 +408,6 @@ router.post("/deals", async (req, res) => {
 ========================= */
 
 router.post("/deals/:id/report", (req, res) => {
-  // IMPORTANT: report must work with header/query when body.country missing.
   const country = publicWriteCountry(req);
   const store = ensureReports(readDeals(country));
 
@@ -448,8 +438,7 @@ router.post("/deals/:id/report", (req, res) => {
 });
 
 /* =========================
-   ADMIN — LIST (STRICT)
-   GET /admin/deals?country=US|CA
+   ADMIN — LIST
 ========================= */
 
 router.get("/admin/deals", (req, res) => {
@@ -469,7 +458,6 @@ router.get("/admin/deals", (req, res) => {
 
 /* =========================
    ADMIN — PENDING DEALS
-   GET /admin/deals/pending
 ========================= */
 
 router.get("/admin/deals/pending", (req, res) => {
@@ -478,9 +466,8 @@ router.get("/admin/deals/pending", (req, res) => {
   const country = adminCountry(req);
   const store = ensureStore(readDeals(country));
 
-  const pendingDeals = store.deals.filter(
-    (d) => String(d.status || "").trim() === "pending"
-  );
+  // ✅ ONLY true pending
+  const pendingDeals = store.deals.filter((d) => isPending(d));
 
   res.json({
     country,
@@ -490,8 +477,7 @@ router.get("/admin/deals/pending", (req, res) => {
 });
 
 /* =========================
-   ADMIN — CREATE
-   POST /admin/deals
+   ADMIN — CREATE (APPROVED)
 ========================= */
 
 router.post("/admin/deals", async (req, res) => {
@@ -555,7 +541,6 @@ router.post("/admin/deals", async (req, res) => {
 
 /* =========================
    ADMIN — APPROVE
-   POST /admin/deals/:id/approve
 ========================= */
 
 router.post("/admin/deals/:id/approve", (req, res) => {
@@ -570,7 +555,7 @@ router.post("/admin/deals/:id/approve", (req, res) => {
   deal.status = "approved";
   deal.updatedAt = nowIso();
 
-  // Points awarding (award once)
+  // Award points once
   const POINTS = 25;
   if (deal.createdByUserId && !deal.pointsAwarded) {
     const r = addUserPoints(deal.createdByUserId, POINTS);
@@ -589,8 +574,7 @@ router.post("/admin/deals/:id/approve", (req, res) => {
 
 /* =========================
    ADMIN — REJECT
-   POST /admin/deals/:id/reject
-   FIX: DELETE FROM STORE (SO IT NEVER COMES BACK)
+   FIX: DELETE FROM STORE
 ========================= */
 
 router.post("/admin/deals/:id/reject", (req, res) => {
@@ -601,9 +585,9 @@ router.post("/admin/deals/:id/reject", (req, res) => {
   const id = str(req.params.id);
 
   const before = store.deals.length;
-  store.deals = store.deals.filter(
-    (d) => String(d?.id || "").trim() !== id
-  );
+
+  // Delete by id only
+  store.deals = store.deals.filter((d) => str(d?.id) !== id);
 
   if (store.deals.length === before) {
     return res.status(404).json({ error: "Deal not found" });
@@ -617,7 +601,6 @@ router.post("/admin/deals/:id/reject", (req, res) => {
 
 /* =========================
    ADMIN — UPDATE
-   PUT /admin/deals/:id
 ========================= */
 
 router.put("/admin/deals/:id", (req, res) => {
@@ -642,6 +625,7 @@ router.put("/admin/deals/:id", (req, res) => {
 
   if (patch.url) next.url = normalizeAmazonUrl(patch.url) || str(patch.url) || null;
 
+  // Alerts price-drop triggers (if you use backend alerts)
   const newPrice = Number(next.price);
   if (Number.isFinite(oldPrice) && Number.isFinite(newPrice) && newPrice !== oldPrice) {
     const ts = nowIso();
@@ -670,7 +654,6 @@ router.put("/admin/deals/:id", (req, res) => {
 
 /* =========================
    ADMIN — DELETE (SOFT DELETE)
-   DELETE /admin/deals/:id?country=US|CA
 ========================= */
 
 router.delete("/admin/deals/:id", (req, res) => {
