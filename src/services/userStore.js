@@ -3,14 +3,52 @@ import fs from "fs";
 import path from "path";
 
 /* =====================================================
-   USER STORE (POINTS ONLY)
-   - Minimal, safe JSON store
-   - Auto-creates file on first use
+   USER STORE (POINTS + LEVELS)
+   - JSON-backed
+   - Deterministic levels (derived from points)
+   - Backward compatible
 ===================================================== */
 
 const DATA_DIR = path.join(process.cwd(), "src", "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const BACKUP_FILE = `${USERS_FILE}.bak`;
+
+/* =====================================================
+   LEVEL CONFIG (SINGLE SOURCE)
+===================================================== */
+
+const LEVELS = [
+  { level: 1, name: "New Member", minPoints: 0 },
+  { level: 2, name: "Deal Hunter", minPoints: 100 },
+  { level: 3, name: "Smart Saver", minPoints: 300 },
+  { level: 4, name: "Elite Finder", minPoints: 600 },
+  { level: 5, name: "Legendary Deals", minPoints: 1000 },
+];
+
+function computeLevel(points) {
+  const p = Number(points) || 0;
+
+  let current = LEVELS[0];
+  for (const lvl of LEVELS) {
+    if (p >= lvl.minPoints) current = lvl;
+  }
+
+  const next = LEVELS.find((l) => l.minPoints > current.minPoints) || null;
+
+  return {
+    level: current.level,
+    levelName: current.name,
+    points: p,
+    nextLevel: next
+      ? {
+          level: next.level,
+          levelName: next.name,
+          requiredPoints: next.minPoints,
+          remainingPoints: Math.max(0, next.minPoints - p),
+        }
+      : null,
+  };
+}
 
 /* =====================================================
    INIT
@@ -27,7 +65,7 @@ function ensureStore() {
       JSON.stringify(
         {
           updatedAt: new Date().toISOString(),
-          users: {}, // { [userId]: { points: number, updatedAt: string, createdAt: string } }
+          users: {},
         },
         null,
         2
@@ -47,14 +85,12 @@ function readStore() {
     const raw = fs.readFileSync(USERS_FILE, "utf8");
     const parsed = JSON.parse(raw || "{}");
 
-    const users =
-      parsed && typeof parsed === "object" && parsed.users && typeof parsed.users === "object"
-        ? parsed.users
-        : {};
-
     return {
       updatedAt: parsed.updatedAt || new Date().toISOString(),
-      users,
+      users:
+        parsed && typeof parsed.users === "object" && parsed.users
+          ? parsed.users
+          : {},
     };
   } catch (err) {
     console.warn("userStore read failed, resetting:", err?.message || err);
@@ -76,17 +112,12 @@ function writeStore(store) {
   ensureStore();
   backupFile();
 
-  const safeUsers =
-    store && typeof store === "object" && store.users && typeof store.users === "object"
-      ? store.users
-      : {};
-
   fs.writeFileSync(
     USERS_FILE,
     JSON.stringify(
       {
         updatedAt: new Date().toISOString(),
-        users: safeUsers,
+        users: store.users || {},
       },
       null,
       2
@@ -104,12 +135,17 @@ export function getUser(userId) {
   if (!id) return null;
 
   const store = readStore();
-  const row = store.users[id];
-  if (!row) return { id, points: 0 };
+  const row = store.users[id] || { points: 0 };
+
+  const points = Number(row.points) || 0;
+  const levelInfo = computeLevel(points);
 
   return {
     id,
-    points: Number(row.points) || 0,
+    points,
+    level: levelInfo.level,
+    levelName: levelInfo.levelName,
+    nextLevel: levelInfo.nextLevel,
   };
 }
 
@@ -121,20 +157,35 @@ export function addUserPoints(userId, points) {
   if (!Number.isFinite(delta)) return { ok: false, error: "points must be a number" };
 
   const store = readStore();
-
   const now = new Date().toISOString();
-  const existing = store.users[id] || { points: 0, createdAt: now };
 
-  const currentPoints = Number(existing.points) || 0;
-  const nextPoints = Math.max(0, Math.floor(currentPoints + delta));
+  const existing = store.users[id] || {
+    points: 0,
+    createdAt: now,
+  };
+
+  const beforePoints = Number(existing.points) || 0;
+  const afterPoints = Math.max(0, Math.floor(beforePoints + delta));
 
   store.users[id] = {
-    points: nextPoints,
+    points: afterPoints,
     createdAt: existing.createdAt || now,
     updatedAt: now,
   };
 
   writeStore(store);
 
-  return { ok: true, userId: id, points: nextPoints, added: delta };
+  const beforeLevel = computeLevel(beforePoints);
+  const afterLevel = computeLevel(afterPoints);
+
+  return {
+    ok: true,
+    userId: id,
+    added: delta,
+    points: afterPoints,
+    leveledUp: afterLevel.level > beforeLevel.level,
+    level: afterLevel.level,
+    levelName: afterLevel.levelName,
+    nextLevel: afterLevel.nextLevel,
+  };
 }
