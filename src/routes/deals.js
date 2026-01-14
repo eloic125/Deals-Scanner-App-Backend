@@ -440,6 +440,28 @@ router.get("/admin/deals", (req, res) => {
 });
 
 /* =========================
+   ADMIN — PENDING DEALS
+   GET /admin/deals/pending
+========================= */
+
+router.get("/admin/deals/pending", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const country = adminCountry(req);
+  const store = ensureStore(readDeals(country));
+
+  const pendingDeals = store.deals.filter(
+    (d) => String(d.status || "").trim() === "pending"
+  );
+
+  res.json({
+    country,
+    count: pendingDeals.length,
+    deals: pendingDeals,
+  });
+});
+
+/* =========================
    ADMIN — CREATE
    POST /admin/deals
 ========================= */
