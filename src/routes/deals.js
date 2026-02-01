@@ -132,6 +132,22 @@ function toNumOrZero(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * Compute discount percent once at write time.
+ * Ensures new deals show up in 50% / 75% UI filters that rely on discountPercent.
+ */
+function computeDiscountPercent(price, originalPrice) {
+  if (
+    typeof price === "number" &&
+    typeof originalPrice === "number" &&
+    originalPrice > 0 &&
+    price < originalPrice
+  ) {
+    return Math.round(((originalPrice - price) / originalPrice) * 100);
+  }
+  return 0;
+}
+
 function isExpired(deal, nowMs) {
   if (!deal?.expiresAt) return false;
   const t = new Date(deal.expiresAt).getTime();
@@ -373,12 +389,15 @@ router.post("/deals", async (req, res) => {
     }
   } catch {}
 
+  const originalPrice = toNumOrNull(body.originalPrice);
+
   // ✅ CRITICAL: ALWAYS pending (never auto-approve)
   const deal = {
     id: crypto.randomUUID(),
     title,
     price: Number(price),
-    originalPrice: toNumOrNull(body.originalPrice),
+    originalPrice,
+    discountPercent: computeDiscountPercent(Number(price), originalPrice),
     retailer: str(body.retailer) || "Amazon",
     category,
     imageUrl: str(body.imageUrl) || null,
@@ -510,11 +529,14 @@ router.post("/admin/deals", async (req, res) => {
     }
   } catch {}
 
+  const originalPrice = toNumOrNull(body.originalPrice);
+
   const deal = {
     id: crypto.randomUUID(),
     title,
     price: Number(price),
-    originalPrice: toNumOrNull(body.originalPrice),
+    originalPrice,
+    discountPercent: computeDiscountPercent(Number(price), originalPrice),
     retailer: str(body.retailer) || "Amazon",
     category,
     imageUrl: str(body.imageUrl) || null,
@@ -551,6 +573,16 @@ router.post("/admin/deals/:id/approve", (req, res) => {
 
   const deal = findDealById(store, req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
+
+  // ✅ Safety net: ensure discountPercent exists on approve
+  if (deal.discountPercent === null || deal.discountPercent === undefined) {
+    const p = Number(deal.price);
+    const op = Number(deal.originalPrice);
+    deal.discountPercent = computeDiscountPercent(
+      Number.isFinite(p) ? p : 0,
+      Number.isFinite(op) ? op : 0
+    );
+  }
 
   deal.status = "approved";
   deal.updatedAt = nowIso();
