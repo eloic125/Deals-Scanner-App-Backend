@@ -1,3 +1,4 @@
+// FILE: src/routes/deals.js
 /**
  * =====================================================
  * DEALS ROUTES — STRICT COUNTRY FILTER (NO MERGE)
@@ -34,6 +35,11 @@
  *
  * 6) PUBLIC LIST:
  *    - returns only approved + not expired + not disabled
+ *
+ * CTR UPDATE (ADDED):
+ * - Adds views tracking: POST /deals/:id/view
+ * - Ensures all new deals include views: 0
+ * - Click tracking already existed: POST /deals/:id/click
  *
  * IMPORTANT:
  * - If you ALSO have routes/admin.js with deal endpoints, REMOVE/disable those endpoints.
@@ -301,7 +307,7 @@ router.get("/deals", (req, res) => {
   if (sort === "newest") {
     deals.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   } else if (sort === "trending") {
-    deals.sort((a, b) => (b.clicks || 0) - (a.clicks || 0));
+    deals.sort((a, b) => (toNumOrZero(b.clicks) - toNumOrZero(a.clicks)));
   }
 
   res.json({
@@ -333,6 +339,31 @@ router.get("/deals/:id", (req, res) => {
 });
 
 /* =========================
+   PUBLIC — VIEW TRACKING (CTR)
+========================= */
+
+router.post("/deals/:id/view", (req, res) => {
+  const country = publicWriteCountry(req);
+  const store = ensureStore(readDeals(country));
+
+  const deal = findDealById(store, req.params.id);
+  if (!deal) return res.status(404).json({ error: "Deal not found" });
+
+  const nowMs = Date.now();
+  if (!isApproved(deal) || isDisabled(deal) || isExpired(deal, nowMs)) {
+    return res.status(400).json({ error: "Deal not active" });
+  }
+
+  deal.views = toNumOrZero(deal.views) + 1;
+  deal.updatedAt = nowIso();
+
+  store.updatedAt = nowIso();
+  writeDeals(country, store);
+
+  res.json({ ok: true, country, id: deal.id, views: deal.views });
+});
+
+/* =========================
    PUBLIC — CLICK TRACKING
 ========================= */
 
@@ -349,6 +380,7 @@ router.post("/deals/:id/click", (req, res) => {
   }
 
   deal.clicks = toNumOrZero(deal.clicks) + 1;
+  if (deal.views === undefined || deal.views === null) deal.views = toNumOrZero(deal.views);
   deal.updatedAt = nowIso();
 
   store.updatedAt = nowIso();
@@ -408,6 +440,7 @@ router.post("/deals", async (req, res) => {
     createdAt: ts,
     updatedAt: ts,
     expiresAt: null,
+    views: 0,
     clicks: 0,
     createdByUserId: req.user?.id || null,
     pointsAwarded: false,
@@ -547,6 +580,7 @@ router.post("/admin/deals", async (req, res) => {
     createdAt: ts,
     updatedAt: ts,
     expiresAt: null,
+    views: 0,
     clicks: 0,
     createdByUserId: null,
     pointsAwarded: false,
@@ -583,6 +617,10 @@ router.post("/admin/deals/:id/approve", (req, res) => {
       Number.isFinite(op) ? op : 0
     );
   }
+
+  // ✅ Safety net: ensure CTR fields exist
+  if (deal.views === undefined || deal.views === null) deal.views = 0;
+  if (deal.clicks === undefined || deal.clicks === null) deal.clicks = toNumOrZero(deal.clicks);
 
   deal.status = "approved";
   deal.updatedAt = nowIso();
@@ -676,6 +714,10 @@ router.put("/admin/deals/:id", (req, res) => {
         })
       : [];
   }
+
+  // Safety: keep CTR fields stable if missing
+  if (next.views === undefined || next.views === null) next.views = toNumOrZero(existing?.views);
+  if (next.clicks === undefined || next.clicks === null) next.clicks = toNumOrZero(existing?.clicks);
 
   store.deals[idx] = next;
   store.updatedAt = nowIso();
