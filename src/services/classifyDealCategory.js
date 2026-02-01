@@ -1,23 +1,15 @@
 // FILE: src/services/classifyDealCategory.js
-// FULL UPDATED DROP-IN FILE
+// FULL DROP-IN REPLACEMENT — NO OPENAI
 //
-// FIXES:
-// - Backend NO LONGER crashes if OPENAI_API_KEY is missing
-// - OpenAI is OPTIONAL (safe on Render Free / no env)
-// - Always returns a valid category
-// - Keeps your ALLOWED list and JSON parsing
+// GUARANTEES:
+// - Backend NEVER crashes
+// - No OpenAI API
+// - No billing
+// - No env vars
+// - Categories ALWAYS return
 //
-// BEHAVIOR:
-// - If OPENAI_API_KEY is missing → returns "Other"
-// - If OpenAI errors / bad JSON → returns "Other"
-// - Backend ALWAYS boots
-
-import OpenAI from "openai";
-
-const API_KEY = process.env.OPENAI_API_KEY?.trim() || null;
-
-// 🔒 Only create client if key exists
-const client = API_KEY ? new OpenAI({ apiKey: API_KEY }) : null;
+// RULE:
+// - This app does NOT depend on AI to function
 
 const ALLOWED = [
   "Electronics",
@@ -31,51 +23,41 @@ const ALLOWED = [
   "Other"
 ];
 
+// Simple keyword-based fallback classifier (FREE + SAFE)
 export async function classifyDealCategory({ title, description }) {
-  // 🧯 HARD FAILSAFE — NEVER CRASH BACKEND
-  if (!client) {
-    return "Other";
+  const text = `${title} ${description || ""}`.toLowerCase();
+
+  if (text.includes("iphone") || text.includes("android") || text.includes("tablet")) {
+    return "Phones & Tablets";
   }
 
-  try {
-    const prompt = `
-Classify the product into one category.
-
-Allowed categories:
-${ALLOWED.join("\n")}
-
-Product:
-Title: ${title}
-Description: ${description || ""}
-
-Return ONLY JSON:
-{ "category": "<category>" }
-    `.trim();
-
-    const response = await client.responses.create({
-      model: "gpt-4.1-mini",
-      input: prompt
-    });
-
-    const text =
-      response?.output_text ||
-      response?.output?.[0]?.content?.[0]?.text ||
-      "{}";
-
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return "Other";
-    }
-
-    if (!ALLOWED.includes(data.category)) {
-      return "Other";
-    }
-
-    return data.category;
-  } catch (err) {
-    console.error("Category classify failed:", err?.message || err);
-    return "Other";
+  if (text.includes("laptop") || text.includes("pc") || text.includes("computer")) {
+    return "Computers";
   }
+
+  if (text.includes("console") || text.includes("ps5") || text.includes("xbox") || text.includes("gaming")) {
+    return "Gaming";
+  }
+
+  if (text.includes("alexa") || text.includes("smart") || text.includes("google home")) {
+    return "Smart Home";
+  }
+
+  if (text.includes("kitchen") || text.includes("cook") || text.includes("vacuum")) {
+    return "Home & Kitchen";
+  }
+
+  if (text.includes("fitness") || text.includes("gym") || text.includes("workout")) {
+    return "Fitness";
+  }
+
+  if (text.includes("beauty") || text.includes("skincare") || text.includes("makeup")) {
+    return "Beauty";
+  }
+
+  if (text.includes("tv") || text.includes("headphones") || text.includes("camera")) {
+    return "Electronics";
+  }
+
+  return "Other";
 }
