@@ -228,9 +228,6 @@ function normalizeUrl(url) {
 export function getDealKey(deal) {
   if (deal.sourceKey) return `source:${deal.sourceKey}`;
 
-  // ❗ NEVER normalize URLs for affiliate deals
-  if (deal.url) return `url:${deal.url}`;
-
   if (deal.title) return `title:${normalize(deal.title)}`;
 
   return crypto.createHash("sha1").update(JSON.stringify(deal)).digest("hex");
@@ -442,6 +439,11 @@ export function upsertDeals(a, b) {
       map.set(key, {
         ...current,
         ...raw,
+
+        // 🔥 FORCE affiliate to win
+        affiliateUrl: raw.affiliateUrl || current.affiliateUrl || raw.url || current.url,
+        url: raw.affiliateUrl || current.affiliateUrl || raw.url || current.url,
+
         id: current.id,
         status: current.status || "approved",
         updatedAt: now,
