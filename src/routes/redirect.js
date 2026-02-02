@@ -4,18 +4,21 @@ import { readDeals, writeDeals } from "../services/dealStore.js";
 
 const router = express.Router();
 
-// ENV (FAIL LOUD IF MISSING)
-const AMAZON_TAG = process.env.AMAZON_TAG_CA;
-const EBAY_CAMPID = process.env.EBAY_CAMPAIGN_ID;
+// ENV (NO HARD CODE)
+const AMAZON_TAG_CA = process.env.AMAZON_TAG_CA;
+const AMAZON_TAG_US = process.env.AMAZON_TAG_US;
+const EBAY_CAMPAIGN_ID = process.env.EBAY_CAMPAIGN_ID;
 const EBAY_CUSTOM_ID = process.env.EBAY_CUSTOM_ID;
 
-if (!AMAZON_TAG) throw new Error("AMAZON_TAG_CA missing");
-if (!EBAY_CAMPID) throw new Error("EBAY_CAMPAIGN_ID missing");
-if (!EBAY_CUSTOM_ID) throw new Error("EBAY_CUSTOM_ID missing");
+// ---------------- HELPERS ----------------
+function isAmazonASIN(id) {
+  return /^B0[A-Z0-9]{8}$/.test(id);
+}
 
-// ------------------
-// Helpers
-// ------------------
+function isEbayItemId(id) {
+  return /^[0-9]{9,15}$/.test(id);
+}
+
 function incrementDealClicks(matchFn) {
   const store = readDeals();
   if (!Array.isArray(store.deals)) return;
@@ -29,60 +32,59 @@ function incrementDealClicks(matchFn) {
   writeDeals(store);
 }
 
-// ==================================================
-// EBAY CLICK PROXY — THIS IS WHAT YOU ARE HITTING
-// ==================================================
-router.get("/go/ebay/:itemId", (req, res) => {
-  const { itemId } = req.params;
-  const country = req.query.country === "US" ? "US" : "CA";
+// ---------------- NEW ROUTE (THIS WAS MISSING) ----------------
+router.get("/go/:source/:itemId", (req, res) => {
+  const { source, itemId } = req.params;
+  const country = String(req.query.country || "CA").toUpperCase();
 
-  trackClick({ id: itemId, retailer: "ebay", country });
+  // ---------- AMAZON ----------
+  if (source === "amazon" && isAmazonASIN(itemId)) {
+    trackClick({ id: itemId, retailer: "amazon", country });
 
-  incrementDealClicks(
-    d => d.sourceKey === `ebay:${itemId}`
-  );
+    incrementDealClicks(
+      d => d.sourceKey === `amazon:${itemId}`
+    );
 
-  const domain = country === "US" ? "www.ebay.com" : "www.ebay.ca";
-  const mkrid =
-    country === "US"
+    const tag = country === "US" ? AMAZON_TAG_US : AMAZON_TAG_CA;
+    const url = `https://www.amazon.${country === "US" ? "com" : "ca"}/dp/${itemId}?tag=${tag}`;
+
+    console.log("AMAZON_CLICK_PROXY", url);
+    return res.redirect(302, url);
+  }
+
+  // ---------- EBAY ----------
+  if (source === "ebay" && isEbayItemId(itemId)) {
+    trackClick({ id: itemId, retailer: "ebay", country });
+
+    incrementDealClicks(
+      d => d.sourceKey === `ebay:${itemId}`
+    );
+
+    const domain = country === "US" ? "www.ebay.com" : "www.ebay.ca";
+    const mkrid = country === "US"
       ? "711-53200-19255-0"
       : "706-53473-19255-0";
 
-  const affiliateUrl =
-    `https://${domain}/itm/${encodeURIComponent(itemId)}` +
-    `?mkevt=1` +
-    `&mkcid=1` +
-    `&mkrid=${mkrid}` +
-    `&campid=${EBAY_CAMPID}` +
-    `&customid=${EBAY_CUSTOM_ID}`;
+    const url =
+      `https://${domain}/itm/${itemId}` +
+      `?mkevt=1` +
+      `&mkcid=1` +
+      `&mkrid=${mkrid}` +
+      `&campid=${EBAY_CAMPAIGN_ID}` +
+      `&customid=${EBAY_CUSTOM_ID}`;
 
-  console.log("EBAY_REDIRECT_OK", affiliateUrl);
+    console.log("EBAY_CLICK_PROXY", url);
+    return res.redirect(302, url);
+  }
 
-  return res.redirect(302, affiliateUrl);
+  return res.status(400).json({ error: "Invalid redirect request" });
 });
 
-// ==================================================
-// AMAZON CLICK PROXY (CONSISTENT)
-// ==================================================
-router.get("/go/amazon/:asin", (req, res) => {
-  const { asin } = req.params;
-  const country = req.query.country === "US" ? "US" : "CA";
-
-  trackClick({ id: asin, retailer: "amazon", country });
-
-  incrementDealClicks(
-    d => d.sourceKey === `amazon:${asin}`
-  );
-
-  const domain = country === "US" ? "amazon.com" : "amazon.ca";
-  const tag = AMAZON_TAG;
-
-  const affiliateUrl =
-    `https://www.${domain}/dp/${asin}?tag=${tag}`;
-
-  console.log("AMAZON_REDIRECT_OK", affiliateUrl);
-
-  return res.redirect(302, affiliateUrl);
+// ---------------- LEGACY SUPPORT (KEEP) ----------------
+router.get("/redirect", (req, res) => {
+  const { id } = req.query;
+  if (!id) return res.status(400).json({ error: "Missing id" });
+  return res.redirect(`/go/amazon/${id}`);
 });
 
 export default router;
