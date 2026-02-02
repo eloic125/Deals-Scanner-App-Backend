@@ -314,6 +314,17 @@ router.get("/deals", (req, res) => {
     deals.sort((a, b) => (toNumOrZero(b.clicks) - toNumOrZero(a.clicks)));
   }
 
+  // 🔒 FORCE AFFILIATE URL FOR EBAY
+  deals = deals.map((d) => {
+    if (d.source === "ebay") {
+      return {
+        ...d,
+        url: d.affiliateUrl || d.url, // HARD OVERRIDE
+      };
+    }
+    return d;
+  });
+
   res.json({
     country,
     updatedAt: store.updatedAt || nowIso(),
@@ -338,6 +349,13 @@ router.get("/deals/:id", (req, res) => {
   if (!isApproved(deal)) return res.status(404).json({ error: "Deal not found" });
   if (isDisabled(deal)) return res.status(404).json({ error: "Deal not found" });
   if (isExpired(deal, nowMs)) return res.status(404).json({ error: "Deal not found" });
+
+  if (deal.source === "ebay") {
+    return res.json({
+      ...deal,
+      url: deal.affiliateUrl || deal.url,
+    });
+  }
 
   res.json(deal);
 });
@@ -754,3 +772,23 @@ router.delete("/admin/deals/:id", (req, res) => {
 });
 
 export default router;
+
+router.get("/go/:id", (req, res) => {
+  const country = resolveCountry(req);
+  const store = ensureStore(readDeals(storeCountry(country)));
+
+  const deal = findDealById(store, req.params.id);
+  if (!deal) return res.status(404).send("Not found");
+
+  if (deal.source === "ebay") {
+    const target = deal.affiliateUrl || deal.url;
+    if (!target || !target.includes("campid=")) {
+      return res.status(500).send("Affiliate URL missing");
+    }
+
+    return res.redirect(302, target);
+  }
+
+  // Amazon or others
+  return res.redirect(302, deal.url);
+});
