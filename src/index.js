@@ -92,34 +92,6 @@ app.use(
 ========================= */
 app.options(/.*/, cors());
 
-/* =====================================================
-   EBAY CLICK PROXY — HARD PROOF + AFFILIATE REDIRECT
-   WORKS ON /, /api, /api/v1
-===================================================== */
-function ebayClickProxy(req, res) {
-  const { itemId } = req.params;
-  const country = req.query.country === "US" ? "US" : "CA";
-
-  const affiliateUrl =
-    country === "US"
-      ? `https://www.ebay.com/itm/${itemId}?mkevt=1&mkcid=1&mkrid=711-53200-19255-0&campid=5339134577&customid=dealsscanner`
-      : `https://www.ebay.ca/itm/${itemId}?mkevt=1&mkcid=1&mkrid=706-53473-19255-0&campid=5339134577&customid=dealsscanner`;
-
-  // 🔥 HARD PROOF LOG (SERVER-SIDE)
-  console.log("EBAY_CLICK_PROXY", {
-    itemId,
-    country,
-    ip:
-      req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
-      req.socket.remoteAddress,
-    ua: req.headers["user-agent"],
-    time: new Date().toISOString(),
-    affiliateUrl,
-  });
-
-  return res.redirect(302, affiliateUrl);
-}
-
 /* =========================
    ROUTES — ROOT
 ========================= */
@@ -129,8 +101,6 @@ app.use("/", dealsRoutes);
 app.use("/", alertsRoutes);
 app.use("/", usersRoutes);
 app.use("/", adminRoutes);
-
-app.get("/go/ebay/:itemId", ebayClickProxy);
 
 /* =========================
    ROUTES — /api
@@ -142,8 +112,6 @@ app.use("/api", alertsRoutes);
 app.use("/api", usersRoutes);
 app.use("/api", adminRoutes);
 
-app.get("/api/go/ebay/:itemId", ebayClickProxy);
-
 /* =========================
    ROUTES — /api/v1
 ========================= */
@@ -153,8 +121,6 @@ app.use("/api/v1", dealsRoutes);
 app.use("/api/v1", alertsRoutes);
 app.use("/api/v1", usersRoutes);
 app.use("/api/v1", adminRoutes);
-
-app.get("/api/v1/go/ebay/:itemId", ebayClickProxy);
 
 /* =========================
    CORS ERROR HANDLER
