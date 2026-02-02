@@ -4,25 +4,18 @@ import { readDeals, writeDeals } from "../services/dealStore.js";
 
 const router = express.Router();
 
-/* =====================================================
-   AFFILIATE CONFIG (ENV FIRST)
-===================================================== */
-const AMAZON_TAG = process.env.AMAZON_TAG_CA || "eloicyr09-20";
-const EBAY_CAMPID = process.env.EBAY_CAMPAIGN_ID || "5339134577";
-const EBAY_CUSTOM_ID = process.env.EBAY_CUSTOM_ID || "dealsscanner";
+// ENV (FAIL LOUD IF MISSING)
+const AMAZON_TAG = process.env.AMAZON_TAG_CA;
+const EBAY_CAMPID = process.env.EBAY_CAMPAIGN_ID;
+const EBAY_CUSTOM_ID = process.env.EBAY_CUSTOM_ID;
 
-/* =====================================================
-   HELPERS
-===================================================== */
-function isAmazonASIN(id) {
-  return /^B0[A-Z0-9]{8}$/.test(id);
-}
+if (!AMAZON_TAG) throw new Error("AMAZON_TAG_CA missing");
+if (!EBAY_CAMPID) throw new Error("EBAY_CAMPAIGN_ID missing");
+if (!EBAY_CUSTOM_ID) throw new Error("EBAY_CUSTOM_ID missing");
 
-function isEbayItemId(id) {
-  return /^[0-9]{9,15}$/.test(id);
-}
-
-// Increment clicks inside deals.json
+// ------------------
+// Helpers
+// ------------------
 function incrementDealClicks(matchFn) {
   const store = readDeals();
   if (!Array.isArray(store.deals)) return;
@@ -36,22 +29,17 @@ function incrementDealClicks(matchFn) {
   writeDeals(store);
 }
 
-/* =====================================================
-   🔥 NEW — EBAY CLICK PROXY (USED BY INGEST)
-   /go/ebay/:itemId
-===================================================== */
+// ==================================================
+// EBAY CLICK PROXY — THIS IS WHAT YOU ARE HITTING
+// ==================================================
 router.get("/go/ebay/:itemId", (req, res) => {
   const { itemId } = req.params;
-  const country = String(req.query.country || "CA").toUpperCase();
+  const country = req.query.country === "US" ? "US" : "CA";
 
-  if (!isEbayItemId(itemId)) {
-    return res.status(400).json({ error: "Invalid eBay item id" });
-  }
-
-  trackClick({ id: itemId, retailer: "ebay" });
+  trackClick({ id: itemId, retailer: "ebay", country });
 
   incrementDealClicks(
-    d => d.id === itemId || d.sourceKey === `ebay:${itemId}`
+    d => d.sourceKey === `ebay:${itemId}`
   );
 
   const domain = country === "US" ? "www.ebay.com" : "www.ebay.ca";
@@ -68,55 +56,33 @@ router.get("/go/ebay/:itemId", (req, res) => {
     `&campid=${EBAY_CAMPID}` +
     `&customid=${EBAY_CUSTOM_ID}`;
 
-  // ✅ HARD PROOF IN LOGS
-  console.log("EBAY_REDIRECT_OK", {
-    itemId,
-    country,
-    affiliateUrl,
-  });
+  console.log("EBAY_REDIRECT_OK", affiliateUrl);
 
   return res.redirect(302, affiliateUrl);
 });
 
-/* =====================================================
-   LEGACY ROUTE (KEEP — DO NOT BREAK OLD LINKS)
-   /redirect?id=XXXX
-===================================================== */
-router.get("/redirect", (req, res) => {
-  const { id } = req.query;
+// ==================================================
+// AMAZON CLICK PROXY (CONSISTENT)
+// ==================================================
+router.get("/go/amazon/:asin", (req, res) => {
+  const { asin } = req.params;
+  const country = req.query.country === "US" ? "US" : "CA";
 
-  if (!id) {
-    return res.status(400).json({ error: "Missing id" });
-  }
+  trackClick({ id: asin, retailer: "amazon", country });
 
-  // AMAZON
-  if (isAmazonASIN(id)) {
-    trackClick({ id, retailer: "amazon" });
+  incrementDealClicks(
+    d => d.sourceKey === `amazon:${asin}`
+  );
 
-    incrementDealClicks(
-      d => d.id === id || d.sourceKey === `amazon:${id}`
-    );
+  const domain = country === "US" ? "amazon.com" : "amazon.ca";
+  const tag = AMAZON_TAG;
 
-    const url = `https://www.amazon.ca/dp/${id}?tag=${AMAZON_TAG}`;
-    return res.redirect(302, url);
-  }
+  const affiliateUrl =
+    `https://www.${domain}/dp/${asin}?tag=${tag}`;
 
-  // EBAY (LEGACY — DEFAULT US)
-  if (isEbayItemId(id)) {
-    trackClick({ id, retailer: "ebay" });
+  console.log("AMAZON_REDIRECT_OK", affiliateUrl);
 
-    incrementDealClicks(
-      d => d.id === id || d.sourceKey === `ebay:${id}`
-    );
-
-    const url =
-      `https://www.ebay.com/itm/${id}` +
-      `?mkevt=1&mkcid=1&campid=${EBAY_CAMPID}&customid=${EBAY_CUSTOM_ID}`;
-
-    return res.redirect(302, url);
-  }
-
-  return res.status(400).json({ error: "Unknown product id format" });
+  return res.redirect(302, affiliateUrl);
 });
 
 export default router;
