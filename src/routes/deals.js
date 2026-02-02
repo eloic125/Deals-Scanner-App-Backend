@@ -84,6 +84,10 @@ function normalizeCountry(v) {
   return String(v || "").trim().toUpperCase() === "US" ? "US" : "CA";
 }
 
+function storeCountry(country) {
+  return country === "US" ? "us" : "ca";
+}
+
 /**
  * Resolve country from request robustly.
  * Order:
@@ -263,7 +267,7 @@ router.get("/deals", (req, res) => {
   const { category, sort, maxPrice, discount } = req.query;
 
   const country = publicReadCountry(req);
-  const store = ensureStore(readDeals(country));
+  const store = ensureStore(readDeals(storeCountry(country)));
   const nowMs = Date.now();
 
   let deals = Array.isArray(store.deals) ? [...store.deals] : [];
@@ -324,7 +328,7 @@ router.get("/deals", (req, res) => {
 
 router.get("/deals/:id", (req, res) => {
   const country = publicReadCountry(req);
-  const store = ensureStore(readDeals(country));
+  const store = ensureStore(readDeals(storeCountry(country)));
   const deal = findDealById(store, req.params.id);
 
   if (!deal) return res.status(404).json({ error: "Deal not found" });
@@ -344,7 +348,7 @@ router.get("/deals/:id", (req, res) => {
 
 router.post("/deals/:id/view", (req, res) => {
   const country = publicWriteCountry(req);
-  const store = ensureStore(readDeals(country));
+  const store = ensureStore(readDeals(storeCountry(country)));
 
   const deal = findDealById(store, req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
@@ -358,7 +362,7 @@ router.post("/deals/:id/view", (req, res) => {
   deal.updatedAt = nowIso();
 
   store.updatedAt = nowIso();
-  writeDeals(country, store);
+  writeDeals(storeCountry(country), store);
 
   res.json({ ok: true, country, id: deal.id, views: deal.views });
 });
@@ -369,7 +373,7 @@ router.post("/deals/:id/view", (req, res) => {
 
 router.post("/deals/:id/click", (req, res) => {
   const country = publicWriteCountry(req);
-  const store = ensureStore(readDeals(country));
+  const store = ensureStore(readDeals(storeCountry(country)));
 
   const deal = findDealById(store, req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
@@ -384,7 +388,7 @@ router.post("/deals/:id/click", (req, res) => {
   deal.updatedAt = nowIso();
 
   store.updatedAt = nowIso();
-  writeDeals(country, store);
+  writeDeals(storeCountry(country), store);
 
   res.json({ ok: true, country, id: deal.id, clicks: deal.clicks });
 });
@@ -397,7 +401,7 @@ router.post("/deals/:id/click", (req, res) => {
 router.post("/deals", async (req, res) => {
   const body = req.body || {};
   const country = publicWriteCountry(req);
-  const store = ensureStore(readDeals(country));
+  const store = ensureStore(readDeals(storeCountry(country)));
   const ts = nowIso();
 
   const title = str(body.title);
@@ -450,7 +454,7 @@ router.post("/deals", async (req, res) => {
 
   store.deals.unshift(deal);
   store.updatedAt = ts;
-  writeDeals(country, store);
+  writeDeals(storeCountry(country), store);
 
   res.status(201).json({ ok: true, pending: true, country, deal });
 });
@@ -461,7 +465,7 @@ router.post("/deals", async (req, res) => {
 
 router.post("/deals/:id/report", (req, res) => {
   const country = publicWriteCountry(req);
-  const store = ensureReports(readDeals(country));
+  const store = ensureReports(readDeals(storeCountry(country)));
 
   const deal = findDealById(store, req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
@@ -484,7 +488,7 @@ router.post("/deals/:id/report", (req, res) => {
 
   store.reports.unshift(report);
   store.updatedAt = nowIso();
-  writeDeals(country, store);
+  writeDeals(storeCountry(country), store);
 
   res.json({ ok: true, country, report });
 });
@@ -497,7 +501,7 @@ router.get("/admin/deals", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
   const country = adminCountry(req);
-  const store = ensureStore(readDeals(country));
+  const store = ensureStore(readDeals(storeCountry(country)));
 
   res.json({
     country,
@@ -516,7 +520,7 @@ router.get("/admin/deals/pending", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
   const country = adminCountry(req);
-  const store = ensureStore(readDeals(country));
+  const store = ensureStore(readDeals(storeCountry(country)));
 
   // ✅ ONLY true pending
   const pendingDeals = store.deals.filter((d) => isPending(d));
@@ -537,7 +541,7 @@ router.post("/admin/deals", async (req, res) => {
 
   const body = req.body || {};
   const country = normalizeCountry(body.country);
-  const store = ensureStore(readDeals(country));
+  const store = ensureStore(readDeals(storeCountry(country)));
   const ts = nowIso();
 
   const title = str(body.title);
@@ -590,7 +594,7 @@ router.post("/admin/deals", async (req, res) => {
 
   store.deals.unshift(deal);
   store.updatedAt = ts;
-  writeDeals(country, store);
+  writeDeals(storeCountry(country), store);
 
   res.status(201).json({ ok: true, country, deal });
 });
@@ -603,7 +607,7 @@ router.post("/admin/deals/:id/approve", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
   const country = adminCountry(req);
-  const store = ensureStore(readDeals(country));
+  const store = ensureStore(readDeals(storeCountry(country)));
 
   const deal = findDealById(store, req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
@@ -637,7 +641,7 @@ router.post("/admin/deals/:id/approve", (req, res) => {
   }
 
   store.updatedAt = nowIso();
-  writeDeals(country, store);
+  writeDeals(storeCountry(country), store);
 
   res.json({ ok: true, country, deal });
 });
@@ -651,7 +655,7 @@ router.post("/admin/deals/:id/reject", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
   const country = adminCountry(req);
-  const store = ensureStore(readDeals(country));
+  const store = ensureStore(readDeals(storeCountry(country)));
   const id = str(req.params.id);
 
   const before = store.deals.length;
@@ -664,7 +668,7 @@ router.post("/admin/deals/:id/reject", (req, res) => {
   }
 
   store.updatedAt = nowIso();
-  writeDeals(country, store);
+  writeDeals(storeCountry(country), store);
 
   res.json({ ok: true, country, deleted: true, id });
 });
@@ -677,7 +681,7 @@ router.put("/admin/deals/:id", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
   const country = adminCountry(req);
-  const store = ensureAlerts(readDeals(country));
+  const store = ensureAlerts(readDeals(storeCountry(country)));
 
   const idx = findDealIndexById(store, req.params.id);
   if (idx === -1) return res.status(404).json({ error: "Deal not found" });
@@ -721,7 +725,7 @@ router.put("/admin/deals/:id", (req, res) => {
 
   store.deals[idx] = next;
   store.updatedAt = nowIso();
-  writeDeals(country, store);
+  writeDeals(storeCountry(country), store);
 
   res.json({ ok: true, country, deal: next });
 });
@@ -734,7 +738,7 @@ router.delete("/admin/deals/:id", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
   const country = adminCountry(req);
-  const store = ensureStore(readDeals(country));
+  const store = ensureStore(readDeals(storeCountry(country)));
 
   const deal = findDealById(store, req.params.id);
   if (!deal) return res.status(404).json({ error: "Deal not found" });
@@ -744,7 +748,7 @@ router.delete("/admin/deals/:id", (req, res) => {
   deal.updatedAt = nowIso();
 
   store.updatedAt = nowIso();
-  writeDeals(country, store);
+  writeDeals(storeCountry(country), store);
 
   res.json({ ok: true, country, id: deal.id });
 });
