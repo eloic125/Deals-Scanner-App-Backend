@@ -1,3 +1,5 @@
+console.log("REDIRECT ROUTES FILE LOADED");
+
 import express from "express";
 import { trackClick } from "../services/clickTracker.js";
 import { readDeals, writeDeals } from "../services/dealStore.js";
@@ -32,7 +34,35 @@ function incrementDealClicks(matchFn) {
   writeDeals(store);
 }
 
-// ---------------- NEW ROUTE (THIS WAS MISSING) ----------------
+// ---------------- UUID → SOURCE REDIRECT ----------------
+router.get("/go/:uuid", (req, res) => {
+  console.log("UUID ROUTE HIT", req.params.uuid);
+  const { uuid } = req.params;
+  const country = String(req.query.country || "CA").toUpperCase();
+
+  const store = readDeals({ country });
+  if (!Array.isArray(store.deals)) {
+    return res.status(500).json({ error: "Deal store invalid" });
+  }
+
+  const deal = store.deals.find(d => d.id === uuid);
+  if (!deal) {
+    return res.status(404).json({ error: "Deal not found" });
+  }
+
+  if (!deal.sourceKey) {
+    return res.status(500).json({ error: "Deal source missing" });
+  }
+
+  const [source, itemId] = deal.sourceKey.split(":");
+
+  return res.redirect(
+    302,
+    `/go/${source}/${itemId}?country=${country}`
+  );
+});
+
+// ---------------- SOURCE → ITEM REDIRECT ----------------
 router.get("/go/:source/:itemId", (req, res) => {
   const { source, itemId } = req.params;
   const country = String(req.query.country || "CA").toUpperCase();

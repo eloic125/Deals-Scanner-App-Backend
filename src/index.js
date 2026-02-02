@@ -124,8 +124,8 @@ function ebayClickProxy(req, res) {
    ROUTES — ROOT
 ========================= */
 app.use("/", healthRoutes);
-app.use("/", dealsRoutes);
 app.use("/", redirectRoutes);
+app.use("/", dealsRoutes);
 app.use("/", alertsRoutes);
 app.use("/", usersRoutes);
 app.use("/", adminRoutes);
@@ -136,8 +136,8 @@ app.get("/go/ebay/:itemId", ebayClickProxy);
    ROUTES — /api
 ========================= */
 app.use("/api", healthRoutes);
-app.use("/api", dealsRoutes);
 app.use("/api", redirectRoutes);
+app.use("/api", dealsRoutes);
 app.use("/api", alertsRoutes);
 app.use("/api", usersRoutes);
 app.use("/api", adminRoutes);
@@ -148,8 +148,8 @@ app.get("/api/go/ebay/:itemId", ebayClickProxy);
    ROUTES — /api/v1
 ========================= */
 app.use("/api/v1", healthRoutes);
-app.use("/api/v1", dealsRoutes);
 app.use("/api/v1", redirectRoutes);
+app.use("/api/v1", dealsRoutes);
 app.use("/api/v1", alertsRoutes);
 app.use("/api/v1", usersRoutes);
 app.use("/api/v1", adminRoutes);
