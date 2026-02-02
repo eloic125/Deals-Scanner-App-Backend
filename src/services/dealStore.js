@@ -226,13 +226,10 @@ function normalizeUrl(url) {
 ===================================================== */
 
 export function getDealKey(deal) {
-  if (!deal) return null;
-
   if (deal.sourceKey) return `source:${deal.sourceKey}`;
-  if (deal.asin) return `asin:${deal.asin}`;
 
-  const u = normalizeUrl(deal.url);
-  if (u) return `url:${u}`;
+  // ❗ NEVER normalize URLs for affiliate deals
+  if (deal.url) return `url:${deal.url}`;
 
   if (deal.title) return `title:${normalize(deal.title)}`;
 

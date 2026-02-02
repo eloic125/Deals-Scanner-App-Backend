@@ -771,8 +771,6 @@ router.delete("/admin/deals/:id", (req, res) => {
   res.json({ ok: true, country, id: deal.id });
 });
 
-export default router;
-
 router.get("/go/:id", (req, res) => {
   const country = resolveCountry(req);
   const store = ensureStore(readDeals(storeCountry(country)));
@@ -792,3 +790,5 @@ router.get("/go/:id", (req, res) => {
   // Amazon or others
   return res.redirect(302, deal.url);
 });
+
+export default router;
