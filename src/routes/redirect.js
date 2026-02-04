@@ -21,8 +21,8 @@ function isEbayItemId(id) {
   return /^[0-9]{9,15}$/.test(id);
 }
 
-function incrementDealClicks(matchFn) {
-  const store = readDeals();
+function incrementDealClicks(matchFn, country) {
+  const store = readDeals({ country });
   if (!Array.isArray(store.deals)) return;
 
   const idx = store.deals.findIndex(matchFn);
@@ -31,7 +31,7 @@ function incrementDealClicks(matchFn) {
   store.deals[idx].clicks = (store.deals[idx].clicks || 0) + 1;
   store.deals[idx].updatedAt = new Date().toISOString();
 
-  writeDeals(store);
+  writeDeals(store, { country });
 }
 
 // ---------------- UUID → SOURCE REDIRECT ----------------
@@ -72,7 +72,8 @@ router.get("/go/:source/:itemId", (req, res) => {
     trackClick({ id: itemId, retailer: "amazon", country });
 
     incrementDealClicks(
-      d => d.sourceKey === `amazon:${itemId}`
+      d => d.sourceKey === `amazon:${itemId}`,
+      country
     );
 
     const tag = country === "US" ? AMAZON_TAG_US : AMAZON_TAG_CA;
@@ -87,7 +88,8 @@ router.get("/go/:source/:itemId", (req, res) => {
     trackClick({ id: itemId, retailer: "ebay", country });
 
     incrementDealClicks(
-      d => d.sourceKey === `ebay:${itemId}`
+      d => d.sourceKey === `ebay:${itemId}`,
+      country
     );
 
     const domain = country === "US" ? "www.ebay.com" : "www.ebay.ca";
