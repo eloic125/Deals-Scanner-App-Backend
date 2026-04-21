@@ -21,7 +21,11 @@ console.log("BOOT VERSION 2025-01-STABLE-PERSISTENT");
 /* =========================
    SECURITY
 ========================= */
-app.use(helmet());
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
 
 /* =========================
    BODY PARSER (REQUIRED)
