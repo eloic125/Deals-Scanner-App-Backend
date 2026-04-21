@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
+import path from "path";
 
 import healthRoutes from "./routes/health.js";
 import dealsRoutes from "./routes/deals.js";
@@ -26,6 +27,11 @@ app.use(helmet());
    BODY PARSER (REQUIRED)
 ========================= */
 app.use(express.json({ limit: "1mb" }));
+
+/* =========================
+   STATIC IMAGES
+========================= */
+app.use("/images", express.static(path.join(process.cwd(), "public/images")));
 
 /* =========================
    USER IDENTITY MIDDLEWARE
