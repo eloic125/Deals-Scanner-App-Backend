@@ -1,0 +1,4 @@
+cd C:\Users\Utilisateur\Desktop\dealsignal-backend
+git add public/images
+git commit -m "Add new deal images"
+git push
